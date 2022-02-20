@@ -1,8 +1,6 @@
 from argparse import ArgumentParser
-from cProfile import label
-from math import ceil, floor
-
-import numpy as np
+from math import ceil
+from tqdm import trange
 from supervised_model.mss_data import HarmonixDataset, SongDataset
 from supervised_model.sup_model import UnsupEmbedding
 import supervised_model.config as cfg
@@ -61,49 +59,53 @@ def train(args):
     exp_dir, logger = experiment_setup(args)
     for epoch in range(n_epochs):
         model.train()
-        for j, (song, labels) in enumerate(dataset_loader):
-            song, labels = song.squeeze(0), labels.squeeze(0)
-            # complement the last batch
-            num_batch = len(labels) / batch_size
-            if num_batch > 1:
-                r = ceil(num_batch)*batch_size - len(labels)
-                song = torch.concat((song, song[:, :r*cfg.CHUNK_LEN]), dim=1)
-                labels = torch.concat((labels, labels[:r]))
-            
-            song_dataset = SongDataset(song, labels)
-            song_loader = DataLoader(
-                song_dataset, batch_size=batch_size, shuffle=True)
-            
-            for k, (examples, example_labels) in enumerate(song_loader):
-                # batch sample in a song
-                # forward
-                examples = examples.to(device)
-                print(examples.shape)
-                example_labels = example_labels.to(device)
-                print(example_labels.shape)
-                embeddings = model(examples)
-                loss = criterion(embeddings, example_labels)
+        iterator = iter(dataset_loader)
+        with trange(len(dataset_loader)) as t:
+            for _ in t:
+                song, labels = next(iterator)
+                song, labels = song.squeeze(0), labels.squeeze(0)
+                # complement the last batch TODO: shuffle first
+                num_batch = len(labels) / batch_size
+                if num_batch > 1:
+                    r = ceil(num_batch)*batch_size - len(labels)
+                    song = torch.concat((song, song[:, :r*cfg.CHUNK_LEN]), dim=1)
+                    labels = torch.concat((labels, labels[:r]))
 
-                # backward
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                song_dataset = SongDataset(song, labels)
+                song_loader = DataLoader(
+                    song_dataset, batch_size=batch_size, shuffle=True)
 
+                for k, (examples, example_labels) in enumerate(song_loader):
+                    # batch sample in a song
+                    # forward
+                    examples = examples.to(device)
+                    #print(examples.shape)
+                    example_labels = example_labels.to(device)
+                    #print(example_labels.shape)
+                    embeddings = model(examples)
+                    loss = criterion(embeddings, example_labels)
+
+                    # backward
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+                t.set_description('Epoch:[{}/{}], loss={:.5f}'.format(epoch, n_epochs, loss.item()))
         # validate TODO
         score = validate(model, song, labels)
         checkpoint = {'state_dict': model.state_dict(),
                       'best_score': best_score}
+
         # save the best model
         if score > best_score:
             best_score = score
             checkpoint['best_score'] = best_score
-            torch.save(checkpoint, os.path.join(
-                exp_dir, args.model+'_best.pt'))
-
+            torch.save(checkpoint, os.path.join(exp_dir, args.model+'_best.pt'))
         # save the latest model
         torch.save(checkpoint, os.path.join(exp_dir, args.model+'_last.pt'))
 
-        logger.info('Epoch:[{}/{}]\t loss={:.5f}\t score={:.3f}'.format(epoch, n_epochs, loss, score))
+        logger.info(
+            'Epoch:[{}/{}]\t loss={:.5f}\t score={:.3f}'.format(epoch, n_epochs, loss.item(), score))
 
 
 if __name__ == '__main__':
