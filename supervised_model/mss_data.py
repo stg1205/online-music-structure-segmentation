@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.utils.data as tud
 import os
-import config
+from . import config
 import scipy
 
 
@@ -48,7 +48,7 @@ class HarmonixDataset(tud.Dataset):
     
     def __getitem__(self, index):
         data = np.load(self._data_paths[index])  # (mels, time)
-        print(self._data_paths[index])
+        #print(self._data_paths[index])
         if self._transform is not None:
             data = self._transform(data)
         
@@ -62,7 +62,7 @@ class HarmonixDataset(tud.Dataset):
         labels = labels.str.strip()
         for i, l in enumerate(labels.drop_duplicates()):
             label_dict[l] = i
-        print(label_dict)
+        #print(label_dict)
         if not self._alignment:
             hop_size = config.HOP_SIZE
             chunk_len = config.CHUNK_LEN
@@ -111,10 +111,9 @@ class SongDataset(tud.Dataset):
             start = config.HOP_SIZE * index
             end = start + config.CHUNK_LEN
 
-            return self._data[start:end, :], self._labels[index]
+            return self._data[:, start:end], self._labels[index]
         else:
             raise NotImplementedError
-
 
 
 if __name__ == '__main__':
@@ -125,3 +124,6 @@ if __name__ == '__main__':
     sample, label = next(iter(dataloader))
     print(sample, sample.shape)
     print(label, label.shape)
+
+    song_dataset = SongDataset(sample.squeeze(0), label.squeeze(0))
+    

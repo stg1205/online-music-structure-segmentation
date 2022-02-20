@@ -1,7 +1,6 @@
 import gym
 import numpy as np
-import environment.config as config
-from environment.config import CHUNK_LEN, HOP_SIZE
+from . import config as cfg
 import os
 
 
@@ -39,21 +38,21 @@ class MSSEnv(gym.Env):
         self._batch_start_idx = 0
         self._batch_size = batch_size  # sample how many songs without clearing the embedding space
         
-        self._cur_mel_spec = np.fromfile(self._file_list[0])
-        self._cur_chunk_idx = HOP_SIZE
+        self._cur_mel_spec = np.load(self._file_list[0])
+        self._cur_chunk_idx = cfg.HOP_SIZE
 
         self._state = {'embedding_space': np.array([]), 
                         'clusters': np.array([]),
-                        'cur_chunk': self._cur_mel_spec[0:CHUNK_LEN]}
+                        'cur_chunk': self._cur_mel_spec[0:cfg.CHUNK_LEN]}
         self._frontend_model = frontend_model
         self._reward_model = reward_model
 
     def _load_dataset(self):
         """read file list in dataset directory
         """
-        files = os.listdir(config.DATASET_DIR)
+        files = os.listdir(cfg.DATASET_DIR)
         np.random.shuffle(files)
-        return list(map(lambda x: os.path.join(config.DATASET_DIR, x), files))
+        return list(map(lambda x: os.path.join(cfg.DATASET_DIR, x), files))
 
     def step(self, action):
         """Accepts an action and returns a tuple (observation, reward, done, info).
@@ -101,8 +100,8 @@ class MSSEnv(gym.Env):
                 self._batch_start_idx = self._file_idx
 
             # move to next song
-            self._cur_mel_spec = np.fromfile(self._file_list[self._file_idx])
-            cur_chunk = self._cur_mel_spec[0:CHUNK_LEN]
+            self._cur_mel_spec = np.load(self._file_list[self._file_idx])
+            cur_chunk = self._cur_mel_spec[:, 0:CHUNK_LEN]
             self._state['cur_chunk'] = cur_chunk
             self._cur_chunk_idx = HOP_SIZE
         
@@ -132,12 +131,12 @@ class MSSEnv(gym.Env):
         self._file_idx = 0
         self._batch_start_idx = 0
         np.random.shuffle(self._file_list)
-        self._cur_mel_spec = np.fromfile(self._file_list[0])
+        self._cur_mel_spec = np.load(self._file_list[0])
         self._cur_chunk_idx = HOP_SIZE
 
         self._state = {'embedding_space': np.array([]), 
                         'clusters': np.array([]),
-                        'cur_chunk': self._cur_mel_spec[0:CHUNK_LEN]}
+                        'cur_chunk': self._cur_mel_spec[:, 0:CHUNK_LEN]}
         return self._state
 
     def render(self, mode="human"):
