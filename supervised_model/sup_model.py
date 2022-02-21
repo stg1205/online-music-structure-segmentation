@@ -1,6 +1,9 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 import sys
+
+import torchaudio
 sys.path.append('..')
 from utils.modules import MyConv2d
 from utils.modules import MyDense
@@ -30,6 +33,7 @@ class UnsupEmbedding(nn.Module):
         self._dense3 = MyDense(128, 128)
     
     def forward(self, x):
+        x = torchaudio.transforms.AmplitudeToDB()(x)
         x = x.unsqueeze(1)  # channel dimension
         x = self._conv1(x)
         x = self._conv2(x)
@@ -38,7 +42,8 @@ class UnsupEmbedding(nn.Module):
         x = x.reshape(x.size(0), -1)
         x = self._dense1(x)
         x = self._dense2(x)
-        out = self._dense3(x)
+        x = self._dense3(x)
+        out = F.normalize(x, p=2, dim=1)
 
         return out
 

@@ -131,3 +131,6 @@ dmypy.json
 # google drive
 .tmp.drivedownload/
 .tmp.driveupload/
+
+# experiments
+supervised_model/sup_experiments/

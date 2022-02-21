@@ -10,6 +10,7 @@ import torch
 import time
 import os
 from utils.logger import create_logger
+import torchaudio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,8 +57,10 @@ def train(args):
     dataset_loader = DataLoader(dataset, shuffle=True)
 
     best_score = 0
+    
     exp_dir, logger = experiment_setup(args)
     for epoch in range(n_epochs):
+        batch_sum, loss_sum = 0, 0
         model.train()
         iterator = iter(dataset_loader)
         with trange(len(dataset_loader)) as t:
@@ -85,6 +88,8 @@ def train(args):
                     embeddings = model(examples)
                     loss = criterion(embeddings, example_labels)
 
+                    loss_sum += loss.item()
+                    batch_sum += 1
                     # backward
                     optimizer.zero_grad()
                     loss.backward()
@@ -105,7 +110,7 @@ def train(args):
         torch.save(checkpoint, os.path.join(exp_dir, args.model+'_last.pt'))
 
         logger.info(
-            'Epoch:[{}/{}]\t loss={:.5f}\t score={:.3f}'.format(epoch, n_epochs, loss.item(), score))
+            'Epoch:[{}/{}]\t loss={:.5f}\t score={:.3f}'.format(epoch, n_epochs, loss_sum/batch_sum, score))
 
 
 if __name__ == '__main__':

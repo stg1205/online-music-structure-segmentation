@@ -4,7 +4,6 @@ import torch
 import torch.utils.data as tud
 import os
 from . import config
-import scipy
 
 
 class HarmonixDataset(tud.Dataset):
