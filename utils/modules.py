@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from . import config as cfg
 
 
 class MyConv2d(nn.Module):
@@ -27,3 +28,16 @@ class MyDense(nn.Module):
 
     def forward(self, x):
         return self._relu(self._dense(x))
+
+
+def split_to_chunk_with_hop(song):
+    tensor_list = []
+    start, end = 0, 0
+    i = 0
+    while end < song.shape[1]:
+        start = i * cfg.HOP_SIZE
+        end = start + cfg.CHUNK_LEN
+        tensor_list.append(song[:, start:end])
+        i += 1
+
+    return torch.stack(tensor_list)

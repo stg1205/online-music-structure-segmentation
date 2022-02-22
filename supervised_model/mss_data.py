@@ -3,7 +3,9 @@ import numpy as np
 import torch
 import torch.utils.data as tud
 import os
-from . import config
+import sys
+sys.path.append('..')
+from utils import config
 
 
 class HarmonixDataset(tud.Dataset):
@@ -89,7 +91,7 @@ class HarmonixDataset(tud.Dataset):
         else:
             raise NotImplementedError
 
-        return data, np.array(chunk_labels)
+        return torch.tensor(data), torch.tensor(chunk_labels)
 
 
 class SongDataset(tud.Dataset):
