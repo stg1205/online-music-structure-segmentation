@@ -1,4 +1,3 @@
-from tabnanny import check
 from utils.modules import split_to_chunk_with_hop
 from utils import config as cfg
 import torch

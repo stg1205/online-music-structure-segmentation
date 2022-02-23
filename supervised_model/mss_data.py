@@ -53,16 +53,15 @@ class HarmonixDataset(tud.Dataset):
         if self._transform is not None:
             data = self._transform(data)
         
-        label = pd.read_csv(self._label_paths[index], sep=' ', header=None, names=['time', 'label'])
+        label_df = pd.read_csv(self._label_paths[index], sep=' ', header=None, names=['time', 'label'])
         
-        times, labels = np.array(label['time'], dtype='float32'), label['label']
+        times, labels = np.array(label_df['time'], dtype='float32'), label_df['label']
         # map labels to numbers
-        label_dict = {}
         labels = labels.str.replace('\d+', '')
         labels = labels.str.lower()
         labels = labels.str.strip()
-        for i, l in enumerate(labels.drop_duplicates()):
-            label_dict[l] = i
+        labels = pd.factorize(labels)[0]
+
         #print(label_dict)
         if not self._alignment:
             hop_size = config.HOP_SIZE
@@ -87,11 +86,15 @@ class HarmonixDataset(tud.Dataset):
                 if label_idx < 0: # some silence may not be labeled like before starting or after ends
                     chunk_labels.append(-1)
                 else:
-                    chunk_labels.append(label_dict[labels[label_idx]])
+                    chunk_labels.append(labels[label_idx])
         else:
             raise NotImplementedError
 
-        return torch.tensor(data), torch.tensor(chunk_labels)
+        # return ref_times and ref_labels for msaf algorithms
+        return {'data': torch.tensor(data), 
+                'chunk_labels': torch.tensor(chunk_labels),
+                'ref_times': times,
+                'ref_labels': np.array(labels[:-1])}
 
 
 class SongDataset(tud.Dataset):
