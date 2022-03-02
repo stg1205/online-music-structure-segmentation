@@ -8,8 +8,11 @@ import msaf.algorithms.scluster.main2 as scl
 import msaf.utils as U
 import pandas as pd
 
-def idx_to_time(boundary_ids):
-    return (boundary_ids * cfg.HOP_SIZE + cfg.CHUNK_LEN/2) * cfg.BIN_TIME_LEN
+def idx_to_time(boundary_ids, mode='last'):
+    if mode == 'last':
+        return (boundary_ids * cfg.eval_hop_size + cfg.CHUNK_LEN - cfg.time_lag_len) * cfg.BIN_TIME_LEN
+    elif mode == 'center':
+        return (boundary_ids * cfg.eval_hop_size + cfg.CHUNK_LEN/2) * cfg.BIN_TIME_LEN
 
 def time_to_interval(times):
     return np.array(list(zip(times[:-1], times[1:])))
@@ -74,9 +77,9 @@ def scluster(embeddings, ref_times, ref_labels):
     assert len(est_idxs) - 1 == len(est_labels), "Number of boundaries " \
                 "(%d) and number of labels(%d) don't match" % (len(est_idxs),
                                                             len(est_labels))
-    # Make sure the indeces are integers
+    # Make sure the indices are integers
     est_idxs = np.asarray(est_idxs, dtype=int)
-    est_times = idx_to_time(est_idxs)
+    est_times = idx_to_time(est_idxs, mode='last')
     est_intervals = time_to_interval(est_times)
 
     ref_intervals = time_to_interval(ref_times)

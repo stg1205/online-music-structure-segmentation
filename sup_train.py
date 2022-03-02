@@ -18,6 +18,9 @@ import utils.config as cfg
 from utils.logger import create_logger
 from utils.modules import split_to_chunk_with_hop
 
+from torch.utils.tensorboard import SummaryWriter
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -36,24 +39,31 @@ def validate(model, val_loader, criterion):
             for i in t:
                 # forward
                 batch = next(iterator)
-                song, chunk_labels, ref_times, ref_labels = batch['data'].squeeze(0), \
-                                                    batch['chunk_labels'].squeeze(0), \
+                song, ref_times, ref_labels = batch['data'].squeeze(0), \
                                                     batch['ref_times'].squeeze(0), \
                                                     batch['ref_labels'].squeeze(0)
-                # adjust input dimension, group chunks to a batch
-                song = split_to_chunk_with_hop(song)
-                song, chunk_labels = song.to(device), chunk_labels.to(device)
-                embeddings = model(song)
-                loss = criterion(embeddings, chunk_labels)
-                loss_sum += loss.item()
-                num += 1
+                
+                song_dataset = SongDataset(song, ref_times, ref_labels, 128, mode='val')
+                song_loader = DataLoader(song_dataset, 128, drop_last=False)
+                for j, (chunks, chunk_labels) in enumerate(song_loader):
+                    chunks = chunks.to(device)
+                    chunk_labels = chunk_labels.to(device)
+                    batch_embeddings = model(chunks)
+                    loss = criterion(batch_embeddings, chunk_labels)
+                    loss_sum += loss.item()
+                    num += 1
+
+                    if j == 0:
+                        embeddings = batch_embeddings
+                    else:
+                        embeddings = torch.concat([embeddings, batch_embeddings], dim=0)
 
                 # evaluation
                 song_embedding = torch.transpose(embeddings, 0, 1)
                 song_embedding = song_embedding.cpu().detach().numpy()
                 ref_times = ref_times.cpu().detach().numpy()
                 ref_labels = ref_labels.cpu().detach().numpy()
-                res = scluster(song_embedding, ref_times, ref_labels)
+                res = scluster(song_embedding, ref_times, ref_labels[:-1])
                 score = 5/14*res['HitRate_0.5F'] + 2/14*res['HitRate_3F'] + 4/14*res['PWF'] + 3/14*res['Sf']
                 score_sum += score
 
@@ -61,7 +71,7 @@ def validate(model, val_loader, criterion):
                     'Song:[{}/{}], loss={:.5f}, score={:.3f}'.format(i, len(val_loader), loss.item(), score))
 
     loss_avg = loss_sum / num
-    score_avg = score_sum / num
+    score_avg = score_sum / len(val_loader)
     return score_avg, loss_avg
 
 
@@ -107,31 +117,29 @@ def train(args):
 
     # set experiment environment
     exp_dir, logger = experiment_setup(args)
+    writer = SummaryWriter()
     if args.pretrained:
         logger.info("Load pretrained model: " + args.pretrained)
         checkpoint = torch.load(args.pretrained)
         model.load_state_dict(checkpoint['state_dict'])
         best_score = checkpoint['best_score']
+    print(model)
     model.to(device)
+
+    # train loop
     for epoch in range(n_epochs):
         batch_sum, loss_sum = 0, 0
         model.train()
         iterator = iter(train_loader)
         with trange(len(train_loader)) as t:
             for _ in t:
+                #continue
                 batch = next(iterator)
-                song, labels = batch['data'], batch['chunk_labels']
+                song, times, labels = batch['data'], batch['ref_times'], batch['ref_labels']
                 song, labels = song.squeeze(0), labels.squeeze(0)
-                # complement the last batch TODO: shuffle first
-                num_batch = len(labels) / batch_size
-                if num_batch > 1:
-                    r = ceil(num_batch)*batch_size - len(labels)
-                    song = torch.concat((song, song[:, :r*cfg.CHUNK_LEN]), dim=1)
-                    labels = torch.concat((labels, labels[:r]))
 
-                song_dataset = SongDataset(song, labels)
-                song_loader = DataLoader(
-                    song_dataset, batch_size=batch_size, shuffle=True)
+                song_dataset = SongDataset(song, times, labels, batch_size, mode='train')
+                song_loader = DataLoader(song_dataset, batch_size=batch_size)
 
                 for k, (examples, example_labels) in enumerate(song_loader):
                     # batch sample in a song
@@ -167,6 +175,9 @@ def train(args):
 
         logger.info('Epoch:[{}/{}]\t train_loss={:.5f}\t val_loss={:.5f}\t score={:.3f}\t best_score{:.3f}'.format(
             epoch, n_epochs, loss_sum/batch_sum, loss_avg, score_avg, best_score))
+        writer.add_scalar('train_loss', loss_sum/batch_sum, epoch)
+        writer.add_scalar('eval_loss', loss_avg, epoch)
+        writer.add_scalar('eval_score', score_avg, epoch)
 
 
 if __name__ == '__main__':

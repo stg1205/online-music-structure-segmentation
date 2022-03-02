@@ -30,12 +30,12 @@ class MyDense(nn.Module):
         return self._relu(self._dense(x))
 
 
-def split_to_chunk_with_hop(song):
+def split_to_chunk_with_hop(song, hop_size):
     tensor_list = []
     start, end = 0, 0
     i = 0
     while end < song.shape[1]:
-        start = i * cfg.HOP_SIZE
+        start = i * hop_size
         end = start + cfg.CHUNK_LEN
         tensor_list.append(song[:, start:end])
         i += 1

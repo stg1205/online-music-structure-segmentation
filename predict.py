@@ -9,8 +9,8 @@ def predict_embedding(model_name, model_path, song):
     '''
     # preprocessing
     song = torch.tensor(song)
-    n_chunks = ((song.shape[1] - (cfg.CHUNK_LEN - 1) - 1) // cfg.HOP_SIZE) + 1
-    data_len = cfg.CHUNK_LEN + (n_chunks - 1) * cfg.HOP_SIZE
+    n_chunks = ((song.shape[1] - (cfg.CHUNK_LEN - 1) - 1) // cfg.train_hop_size) + 1
+    data_len = cfg.CHUNK_LEN + (n_chunks - 1) * cfg.train_hop_size
     song = song[:, :data_len]
 
     # initialize model
@@ -22,7 +22,7 @@ def predict_embedding(model_name, model_path, song):
     model.load_state_dict(checkpoint['state_dict'])
     model.eval()
     
-    song = split_to_chunk_with_hop(song)
+    song = split_to_chunk_with_hop(song, cfg.eval_hop_size)
     embeddings = model(song)
 
     song_embedding = torch.transpose(embeddings, 0, 1)
