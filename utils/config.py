@@ -1,6 +1,7 @@
 # colab
-DATASET = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
+HARMONIX_DIR = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
 WORK_DIR = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmentation'
+SALAMI_DIR = ''
 
 # local
 # DATASET = 'C:\\UR\AIR Lab\\thesis\\dataset\\harmonixset-master\\dataset'
@@ -19,12 +20,22 @@ WORK_DIR = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmenta
 }
 1 / 22050 * 1024 = 0.046s
 '''
+
+# feature parameters
+sr = 22050
+n_mel = 80
+n_fft = 2048
+mel_hop = 1024
+mel_fmin = 0
+mel_fmax = None
+
 BIN_TIME_LEN = 1 / 22050 * 1024
 CHUNK_LEN = 64
 BIN = 80
+EMBEDDING_DIM = 128
 
 train_hop_size = 10
-eval_hop_size = 5
+eval_hop_size = 2
 time_lag_len = 20
 
 # Spectral Clustering Params

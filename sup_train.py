@@ -85,7 +85,8 @@ def experiment_setup(args):
     logger = create_logger(log_fp)
     logger.info('Start training!')
     logger.info(args)
-    return exp_dir, logger
+    logger.info('chunk size: {}, train hop size: {}, eval hop size: {}'.format(cfg.CHUNK_LEN, cfg.train_hop_size, cfg.eval_hop_size))
+    return exp_dir, logger, experiment_id
 
 
 def train(args):
@@ -106,6 +107,7 @@ def train(args):
 
     # loss, dataloader, optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.8, mode='min', patience=3)
     criterion = MultiSimilarityLoss()
     dataset = HarmonixDataset()
     # train, test split
@@ -116,8 +118,8 @@ def train(args):
     val_loader = DataLoader(val_set)
 
     # set experiment environment
-    exp_dir, logger = experiment_setup(args)
-    writer = SummaryWriter()
+    exp_dir, logger, experiment_id = experiment_setup(args)
+    writer = SummaryWriter(log_dir=os.path.join('runs', experiment_id))
     if args.pretrained:
         logger.info("Load pretrained model: " + args.pretrained)
         checkpoint = torch.load(args.pretrained)
@@ -164,7 +166,7 @@ def train(args):
         score_avg, loss_avg = validate(model, val_loader, criterion)
         checkpoint = {'state_dict': model.state_dict(),
                       'best_score': best_score}
-
+        scheduler.step(score_avg)
         # save the best model
         if score_avg > best_score:
             best_score = score_avg

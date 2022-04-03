@@ -24,8 +24,8 @@ class HarmonixDataset(tud.Dataset):
         self._label_paths = []
         
         # load the data paths and label paths to memory
-        data_dir = os.path.join(cfg.DATASET, data)
-        label_dir = os.path.join(cfg.DATASET, 'segments')
+        data_dir = os.path.join(cfg.HARMONIX_DIR, data)
+        label_dir = os.path.join(cfg.HARMONIX_DIR, 'segments')
         for f in os.listdir(data_dir):
             if not f.endswith(data_format):
                 continue

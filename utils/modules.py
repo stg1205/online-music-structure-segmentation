@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from . import config as cfg
 
 
@@ -28,6 +29,27 @@ class MyDense(nn.Module):
 
     def forward(self, x):
         return self._relu(self._dense(x))
+
+
+class PointerAttention(nn.Module):
+    def __init__(self, hidden_dim):
+        super(PointerAttention, self).__init__()
+        self._Wq = nn.Linear(hidden_dim, hidden_dim)
+        self._Wk = nn.Linear(hidden_dim, hidden_dim)
+        self._v = nn.Linear(hidden_dim, 1, bias=False)
+    
+    def forward(self, cluster_embeddings, cur_embedding):
+        '''
+        `cluster_embeddings`: (B, k, hidden_dim)
+        `cur_embedding`: (B, hidden_dim)
+        '''
+        cluster_embeddings = torch.cat([cluster_embeddings, cur_embedding], dim=1)
+        e = F.tanh(self._Wq(cur_embedding).unsqueeze(dim=1) + self._Wk(cluster_embeddings))  # B * k+1 * hidden_dim
+        scores = self._v(e)  # B * k+1 * 1
+        scores = scores.squeeze(-1)
+
+        a = F.softmax(scores, dim=1)
+        return a
 
 
 def split_to_chunk_with_hop(song, hop_size):
