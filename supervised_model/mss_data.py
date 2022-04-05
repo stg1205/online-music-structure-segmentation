@@ -146,6 +146,7 @@ class SongDataset(tud.Dataset):
             r = ceil(num_batch)*self._batch_size - len(chunk_labels)
             chunks = torch.concat([chunks, chunks[:r, :, :]])
             chunk_labels = torch.concat([chunk_labels, chunk_labels[:r]])
+                   
         return chunks, chunk_labels
 
     def __len__(self):

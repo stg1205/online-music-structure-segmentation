@@ -133,5 +133,7 @@ dmypy.json
 .tmp.driveupload/
 
 # experiments
-supervised_model/sup_experiments/
+*experiments/
 runs/
+test.ipynb
+wandb

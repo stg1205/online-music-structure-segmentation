@@ -77,7 +77,7 @@ def validate(model, val_loader, criterion):
 
 def experiment_setup(args):
     experiment_id = time.strftime("%m%d%H%M", time.localtime())
-    exp_dir = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmentation/supervised_model/sup_experiments/' + experiment_id
+    exp_dir = cfg.SUP_DIR + experiment_id
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
     # log

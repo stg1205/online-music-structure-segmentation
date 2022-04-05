@@ -34,7 +34,7 @@ class UnsupEmbedding(nn.Module):
     
     def forward(self, x):
         x = torchaudio.transforms.AmplitudeToDB()(x)
-        x = x.unsqueeze(1)  # channel dimension
+        x = x.unsqueeze(-3)  # channel dimension
         x = self._conv1(x)
         x = self._conv2(x)
         x = self._conv3(x)

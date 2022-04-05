@@ -1,11 +1,14 @@
+import os
 # colab
 HARMONIX_DIR = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
 WORK_DIR = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmentation'
-SALAMI_DIR = ''
-
 # local
 # DATASET = 'C:\\UR\AIR Lab\\thesis\\dataset\\harmonixset-master\\dataset'
-# WORK_DIR = 'C:\\UR\\AIR Lab\\thesis\\online-music-structure-segmentation'
+WORK_DIR = 'C:\\UR\\AIR Lab\\thesis\\online-music-structure-segmentation'
+SALAMI_DIR = 'C:\\UR\\AIR Lab\\thesis\\dataset\\SALAMI\\melspecs'
+SUP_DIR = WORK_DIR + '\\supervised_model\\experiments\\'
+RL_DIR = WORK_DIR + '\\rl\\experiments\\'
+
 
 '''
 {
@@ -47,3 +50,6 @@ scluster_config = {
     "rec_width"  : 2,
     "hier": False
 }
+
+val_pct = 0.1
+test_pct = 0.1
