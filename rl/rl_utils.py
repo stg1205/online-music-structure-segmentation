@@ -2,11 +2,14 @@ import sys
 sys.path.append('..')
 from utils import config as cfg
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
+from torch.nn.utils import clip_grad_norm_
+import torch.nn.functional as F
 import numpy as np
 import torch
 from collections import deque
 from .segment_tree import MinSegmentTree, SumSegmentTree
 import random
+import wandb
 
 
 class obs_buffer:
@@ -15,22 +18,21 @@ class obs_buffer:
     state: {'embedding_space': (embedd_dim, seq_len),
             'cur_chunk': (mel_bin, chunk_len)}
     '''
-    def __init__(self, max_size, chunk_len, mel_bin):
+    def __init__(self, max_size, chunk_len, mel_bin, num_clusters, hidden_size):
         self._embedd_buffer = np.array([None for _ in range(max_size)], object)
         self._chunk_buffer = torch.zeros([max_size, chunk_len, mel_bin])
-        self._onehot_mask_buffer = np.array([None for _ in range(max_size)], object)
+        self._centroids_buffer = torch.zeros([max_size, num_clusters, hidden_size])
     
     def add(self, obs, ptr):
         embedds = obs['embedding_space']
         cur_chunk = obs['cur_chunk']
-        onehot_mask = obs['onehot_mask']
+        centroids = obs['centroids']
         self._chunk_buffer[ptr] = cur_chunk.squeeze(0)
         self._embedd_buffer[ptr] = embedds.squeeze(0)
-        self._onehot_mask_buffer[ptr] = onehot_mask.squeeze(0)
+        self._centroids_buffer[ptr] = centroids.squeeze(0)
 
     def get_batch_by_idx(self, idxs):
         embedds_list = self._embedd_buffer[idxs]
-        mask_list = self._onehot_mask_buffer[idxs]
         # sorted by seq_len descending
         embedds_seq_lens = np.array([embedd.size(0) for embedd in embedds_list])
         sorted_idx = np.argsort(-embedds_seq_lens)
@@ -38,24 +40,24 @@ class obs_buffer:
         embedds_batch = pack_padded_sequence(
             pad_sequence(list(embedds_list[sorted_idx]), batch_first=True), 
             lengths=torch.tensor(embedds_seq_lens[sorted_idx]), batch_first=True)
-        mask_batch = pad_sequence(list(mask_list[sorted_idx]), batch_first=True)
         
         # batch states
         chunk_batch = self._chunk_buffer[idxs][sorted_idx]
+        centroids_batch = self._centroids_buffer[idxs][sorted_idx]
         obs_batch = {
             'embedding_space': embedds_batch,
             'cur_chunk': chunk_batch,
-            'onehot_mask': mask_batch
+            'centroids': centroids_batch
         }
         return obs_batch, sorted_idx
 
 
 class ReplayBuffer:
-    def __init__(self, size, n_step=1, priority=True, alpha=0.6, gamma=0.99):
+    def __init__(self, size, num_clusters, hidden_size, n_step=1, priority=True, alpha=0.6, gamma=0.99):
         self._priority = priority
         #self._obs_buffer = torch.zeros([size, obs_shape[0], obs_shape[1]], dtype=torch.float32)
-        self._obs_buffer = obs_buffer(size, cfg.CHUNK_LEN, cfg.BIN)
-        self._next_obs_buffer = obs_buffer(size, cfg.CHUNK_LEN, cfg.BIN)
+        self._obs_buffer = obs_buffer(size, cfg.CHUNK_LEN, cfg.BIN, num_clusters, hidden_size)
+        self._next_obs_buffer = obs_buffer(size, cfg.CHUNK_LEN, cfg.BIN, num_clusters, hidden_size)
         self._action_buffer = torch.zeros(size, dtype=torch.int64)
         self._reward_buffer = torch.zeros(size, dtype=torch.float32)
         self._done_buffer = torch.zeros(size, dtype=torch.int64)
@@ -134,32 +136,25 @@ class ReplayBuffer:
             idxs = self._sample_proportional(batch_size)
         else:
             idxs = np.random.choice(self._size, size=batch_size, replace=False)
-
+        #print(idxs)
         return self.sample_from_idxs(idxs, beta)
     
     def sample_from_idxs(self, idxs, beta):
         obs_batch, sorted_idx = self._obs_buffer.get_batch_by_idx(idxs)
         next_obs_batch, _ = self._next_obs_buffer.get_batch_by_idx(idxs)
         if self._priority:
-            weights = torch.tensor([self._calculate_weight(i, beta) for i in idxs])
-            return {
-                'obs_batch': obs_batch,
-                'next_obs_batch': next_obs_batch,
-                'action_batch': self._action_buffer[idxs][sorted_idx],
-                'reward_batch': self._reward_buffer[idxs][sorted_idx],
-                'done_batch': self._done_buffer[idxs][sorted_idx],
-                'weights': weights,
-                'idxs': idxs
-            }
+            weights = torch.tensor(np.array([self._calculate_weight(i, beta) for i in idxs]))
         else:
-            return {
-                'obs_batch': obs_batch,
-                'next_obs_batch': next_obs_batch,
-                'action_batch': self._action_buffer[idxs][sorted_idx],
-                'reward_batch': self._reward_buffer[idxs][sorted_idx],
-                'done_batch': self._done_buffer[idxs][sorted_idx],
-                'idxs': idxs
-            }
+            weights = torch.ones(len(idxs))
+        return {
+            'obs_batch': obs_batch,
+            'next_obs_batch': next_obs_batch,
+            'action_batch': self._action_buffer[idxs][sorted_idx],
+            'reward_batch': self._reward_buffer[idxs][sorted_idx],
+            'done_batch': self._done_buffer[idxs][sorted_idx],
+            'weights': weights,
+            'idxs': idxs
+        }
     
     def update_priorities(self, indices, priorities):
         """Update priorities of sampled transitions."""
@@ -204,3 +199,140 @@ class ReplayBuffer:
     
     def __len__(self):
         return self._size
+
+
+def state_to(state, device):
+    # add a batch dimension and move to device
+    format_state = {}
+    if isinstance(state['embedding_space'], torch.Tensor) :
+        format_state['embedding_space'] = state['embedding_space'].unsqueeze(0).to(device)
+        format_state['cur_chunk'] = state['cur_chunk'].unsqueeze(0).to(device)
+        format_state['centroids'] = state['centroids'].unsqueeze(0).to(device)
+    else:
+        format_state['embedding_space'] = state['embedding_space'].to(device)
+        format_state['cur_chunk'] = state['cur_chunk'].to(device)
+        format_state['centroids'] = state['centroids'].to(device)
+    return format_state
+
+def state_out(out):
+    out['q'] = out['q'].detach().cpu()
+    out['new_feature'] = out['new_feature'].detach().cpu()
+    out['cur_cluster_embedd'] = out['cur_cluster_embedd'].detach().cpu()
+
+
+class Policy:
+    def __init__(self, 
+                q_net, 
+                target_q_net, 
+                gamma,
+                target_update_freq,
+                n_step,
+                optim,
+                device):
+        self._q_net = q_net
+        self._target_q_net = target_q_net
+        # params
+        self._gamma = gamma
+        self._target_update_freq = target_update_freq
+        self._n_step = n_step
+
+        self._update_count = 0
+
+        self._optim = optim
+        self._device = device
+
+    def take_action(self, state, env, eps, num_clusters):
+        '''
+        select action using epsilon greedy policy
+        only can choose up to cur cluster number + 1
+        '''
+        self._q_net.eval()
+        # predict q value
+        format_state = state_to(state, self._device)  # has to contain a batch dimension
+        with torch.no_grad():
+            out = self._q_net(format_state, mode='infer')
+        self._q_net.train()
+        state_out(out)
+        feature = out['new_feature']
+        cur_cluster_embedd = out['cur_cluster_embedd']
+
+        if eps > np.random.random():
+            cur_max_cluster = env.get_max_est_label()
+            if cur_max_cluster + 1 < num_clusters:
+                upbound = cur_max_cluster + 2
+            else:
+                upbound = num_clusters
+            selected_action = torch.randint(0, upbound, (1,))
+        else:
+            selected_action = torch.argmax(out['q'])
+        action = {
+            'action': selected_action,
+            'cur_cluster_embedd': cur_cluster_embedd,
+            'new_feature': feature
+        }
+        return action
+    
+    def _dqn_loss(self, batch, gamma):
+        '''
+        calculate double dqn loss
+        '''
+        state = state_to(batch["obs_batch"], self._device)
+        next_state = state_to(batch["next_obs_batch"], self._device)
+        action = batch["action_batch"].reshape(-1, 1).to(self._device)
+        reward = batch["reward_batch"].reshape(-1, 1).to(self._device)
+        done = batch["done_batch"].reshape(-1, 1).to(self._device)
+
+        # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
+            #       = r                       otherwise
+        cur_q_value = self._q_net(state, 'train')['q'].gather(1, action)
+        next_q_value = self._target_q_net(next_state, 'train')['q'].gather(  # Double DQN
+                1, self._q_net(next_state, 'train')['q'].argmax(dim=1, keepdim=True)
+            ).detach()
+        mask = 1 - done
+        target = (reward + gamma * next_q_value * mask).to(self._device)
+
+        # try:
+        #     q_log = {
+        #         'train/cur_q': torch.mean(cur_q_value),
+        #         'train/next_q': torch.mean(next_q_value),
+        #         'train/target_q': torch.mean(target)
+        #     }
+        #     wandb.log(q_log)
+        # except:
+        #     pass
+
+        #print(state)
+        # calculate dqn loss
+        loss = F.smooth_l1_loss(cur_q_value, target, reduction='none')
+        
+        return loss
+    
+    def update(self, batch, n_batch, optim):
+        # calculate loss by combining one step and n step loss
+        ele_wise_loss = self._dqn_loss(batch, self._gamma)
+        if self._n_step > 1:
+            gamma = self._gamma ** self._n_step
+            ele_wise_n_loss = self._dqn_loss(n_batch, gamma)
+            ele_wise_loss += ele_wise_n_loss
+        
+        weights = batch['weights'].to(self._device)
+        loss = torch.mean(ele_wise_loss * weights)  # TODO: which weights?
+        # back propagation
+        optim.zero_grad()
+        loss.backward()
+        clip_grad_norm_(self._q_net._backend.parameters(), 0.5)
+        self._optim.step()
+
+        # hard update target network
+        self._update_count += 1
+        if self._update_count % self._target_update_freq == 0:
+            self._target_q_net.load_state_dict(self._q_net.state_dict())
+        
+        return ele_wise_loss, loss
+
+
+def f1_measure(prc, rec, beta=1.0):
+    if prc == 0 or rec == 0:
+        return 0
+    
+    return (1 + beta**2) * prc * rec / ((beta**2) * prc + rec)

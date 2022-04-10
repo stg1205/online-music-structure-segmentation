@@ -137,3 +137,4 @@ dmypy.json
 runs/
 test.ipynb
 wandb
+.VSCodeCounter

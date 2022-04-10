@@ -51,7 +51,7 @@ class HarmonixDataset(tud.Dataset):
         
         times, labels = np.array(label_df['time'], dtype='float32'), label_df['label']
         # map labels to numbers
-        labels = labels.str.replace('\d+', '')
+        labels = labels.str.replace('\d+', '', regex=True)
         labels = labels.str.lower()
         labels = labels.str.strip()
         labels = pd.factorize(labels)[0]

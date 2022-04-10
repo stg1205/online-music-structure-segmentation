@@ -2,16 +2,15 @@ import gym
 import numpy as np
 import sys
 
-from sklearn import cluster
 sys.path.append('..')
 from utils import config as cfg
 import os
 from utils.config import eval_hop_size, train_hop_size # TODO: which hop size?
 from utils.config import CHUNK_LEN as chunk_len
-import librosa
 import torch
 import torch.nn.functional as F
-from copy import deepcopy
+import pandas as pd
+from . import rl_utils
 
 '''
 in environment, the mel and embedding shape is (feature_dim, seq_len)
@@ -44,11 +43,55 @@ class OMSSEnv(gym.Env):
         self._file_path = file_path  # sample song in order
         self._cluster_encode = cluster_encode
 
-        self._clusters = []
+        self._est_labels = []
         if mode =='train':
             self._hop_size = train_hop_size
         else:
             self._hop_size = eval_hop_size
+        
+        # reward
+        self._times, self._labels = self._load_label()
+        self._ref_labels = []
+        ## pairwise f1
+        self._n_intersection = 0
+        self._n_sim_pair_est, self._n_sim_pair_ref = 0, 0
+        self._pairwise_f1 = 0
+    
+    def get_max_est_label(self):
+        return max(self._est_labels)
+
+    def _load_label(self):
+        '''
+        load the functions segment labels
+        randomly choose 1 or 2 if both are available.
+        else, choose the available one
+        '''
+        # print(self._file_path)
+        song_name = self._file_path.split('specs')[-1].split('.')[0][1:-4]
+        anno_dir = os.path.join(cfg.SALAMI_DIR, 'annotations', song_name, 'parsed')
+        fps = [os.path.join(anno_dir, 'textfile1_functions.txt'),
+                os.path.join(anno_dir, 'textfile2_functions.txt')]
+        #print(fps)
+        if os.path.exists(fps[0]) and os.path.exists(fps[1]):
+            fp = fps[int(np.random.rand() > 0.5)]
+        elif os.path.exists(fps[0]):
+            fp = fps[0]
+        elif os.path.exists(fps[1]):
+            fp = fps[1]
+        else:
+            return None, None
+        label_df = pd.read_csv(fp, sep='\t', header=None, names=['time', 'label'])
+        times, labels = np.array(label_df['time'], dtype='float32'), label_df['label']
+        # map labels to numbers
+        labels = labels.str.replace('\d+', '', regex=True)
+        labels = labels.str.lower()
+        labels = labels.str.strip()
+        labels = pd.factorize(labels)[0]
+
+        return times, labels
+    
+    def check_anno(self):
+        return self._labels is not None
 
     def make(self, device):
         self._mel_spec = np.load(self._file_path)  # pre-calculate mel features
@@ -64,8 +107,21 @@ class OMSSEnv(gym.Env):
             return False
         return False
     
-    def _update_centroids(self, new_feature, cluster_num):
-        pass
+    def _update_centroids(self, cur_cluster_embedd, cluster_num):
+        pre_centroid = self._state['centroids'][cluster_num]
+        N = (np.array(self._est_labels) == cluster_num).sum()
+        centroid = (N * pre_centroid + cur_cluster_embedd.squeeze(0)) / (N + 1)
+        self._state['centroids'][cluster_num] = centroid
+    
+    def _get_ref_label(self):
+        chunk_num = len(self._est_labels)
+        start = chunk_num * self._hop_size
+        end = start + chunk_len
+        label_time = (end - cfg.time_lag_len) * cfg.BIN_TIME_LEN
+        label_idx = np.argmax((self._times > label_time)) - 1
+        
+        return self._labels[label_idx]
+
 
     def step(self, action):
         """
@@ -89,6 +145,9 @@ class OMSSEnv(gym.Env):
         info = {}
         # 1. calculate reward
         cur_state = self._state
+        # ref labels
+        ref_label = self._get_ref_label()
+        self._ref_labels.append(ref_label)
         reward = self._get_reward(cur_state, action)
 
         # if reaching the end of a song, return done
@@ -100,32 +159,34 @@ class OMSSEnv(gym.Env):
         ### a. update clusters
         cluster_num = int(action['action'])
         new_feature = action['new_feature']  # (1, feature)
-        
+        cur_cluster_embedd = action['cur_cluster_embedd']
+        self._est_labels.append(cluster_num)
+        # cluster encode
         cluster_encode = F.one_hot(torch.tensor([cluster_num]), num_classes=self._num_clusters)  # out: (1, num_classes)
         if self._cluster_encode:
             new_feature = torch.cat([new_feature, cluster_encode], dim=1)
         
-        ### concatenate new feature to embedding space (seq_len, feature)
+        ### b. concatenate new feature to embedding space (seq_len, feature)
         self._state['embedding_space'] = torch.cat([self._state['embedding_space'], new_feature], dim=0)
 
-        # update the centroids using ... TODO
-        # self._state['centroids'] = self._update_centroids(new_feature, cluster_num)
+        # c. update the centroids using ... TODO
+        self._update_centroids(cur_cluster_embedd, cluster_num)
 
-        ### update onehot_mask for attention (num_clusters, seq_len)
-        onehot_mask = self._state['onehot_mask']
-        self._clusters.append(cluster_num)
-        labels = self._clusters
-        if labels[-1] == labels[-2]: # if same clusters, zero the last one hot
-            onehot_mask[-1, :] = torch.zeros(self._num_clusters)
-        onehot_mask = torch.cat([onehot_mask, cluster_encode], dim=0)
-        self._state['onehot_mask'] = onehot_mask
+        # ### c. update onehot_mask for attention (num_clusters, seq_len)
+        # onehot_mask = self._state['onehot_mask'] 
+        
+        # est_labels = self._est_labels
+        # if est_labels[-1] == est_labels[-2]: # if same clusters, zero the last one hot
+        #     onehot_mask[-1, :] = torch.zeros(self._num_clusters)
+        # onehot_mask = torch.cat([onehot_mask, cluster_encode], dim=0)
+        # self._state['onehot_mask'] = onehot_mask
 
-        ### b. update embedding space
+        ### d. update embedding space
         if self._update_emb_space():
             # update embedding space using frontend model
             pass
 
-        ### c. new coming chunk
+        ### e. new coming chunk
         start = self._cur_chunk_idx + self._hop_size
         self._cur_chunk_idx = start
         end = start + chunk_len
@@ -139,11 +200,37 @@ class OMSSEnv(gym.Env):
         # else:
         #     next_mask = torch.zeros((1, self._num_clusters))
         # onehot_mask = torch.cat([onehot_mask, next_mask], dim=0)
-        
+        # print(self._cur_chunk_idx)
         return self._state, reward, done, info
+
+    def _get_reward(self, state, action):
+        cluster_num = int(action['action'])
+        new_feature = action['new_feature']  # (1, feature)
+
+        # pairwise f1
+        sim_pair_vt_est = (np.array(self._est_labels) == cluster_num)
+        n_sim_pair_est = sim_pair_vt_est.sum()
+
+        sim_pair_vt_ref = (np.array(self._ref_labels[:-1]) == self._ref_labels[-1])
+        n_sim_pair_ref = sim_pair_vt_ref.sum()
+
+        matches = np.logical_and(sim_pair_vt_est, sim_pair_vt_ref)
+        n_matches = matches.sum()
+
+        self._n_sim_pair_est += n_sim_pair_est
+        self._n_sim_pair_ref += n_sim_pair_ref
+        self._n_intersection += n_matches
+
+        # print(self._est_labels)
+        # print(self._ref_labels)
+        # print(n_matches)
+        # print(sim_pair_vt_est)
+        # print()
+        prc = n_matches / n_sim_pair_est if n_sim_pair_est != 0 else 0
+        rec = n_matches / n_sim_pair_ref if n_sim_pair_ref != 0 else 0
+        f1 = rl_utils.f1_measure(prc, rec)
         
-    def _get_reward(self, state, aciton):
-        return torch.tensor(1)
+        return torch.tensor(f1)
 
     def reset(self, device):
         """
@@ -151,21 +238,27 @@ class OMSSEnv(gym.Env):
         1. embedd the first chunk
         2. move the chunk idx pointer
         """
+        # initialize labels
+        self._est_labels.append(0)
+        self._ref_labels.append(0)
+        # embedd the first chunk
         chunk = self._mel_spec[0:chunk_len, :].to(device)
-        self._clusters.append(0)
         #print(chunk.shape)
         self._frontend_model.eval()
-        embedd = self._frontend_model(chunk.unsqueeze(0)).detach().cpu()  # (1, feature)
+        with torch.no_grad():
+            embedd = self._frontend_model(chunk.unsqueeze(0)).detach().cpu()  # (1, feature)
         #print(embedd.shape)
         self._frontend_model.train()
         self._cur_chunk_idx = self._hop_size
         cluster_encode = F.one_hot(torch.tensor([0]), num_classes=self._num_clusters)
         if self._cluster_encode:
             embedd = torch.cat([embedd, cluster_encode], dim=1)
-        onehot_mask = cluster_encode
+        #onehot_mask = cluster_encode
+        centroids = torch.zeros([self._num_clusters, embedd.size(1)])
+        centroids[0, :] = embedd
         self._state = {'embedding_space': embedd, 
                         'cur_chunk': self._mel_spec[self._hop_size:self._hop_size+chunk_len, :],
-                        'onehot_mask': onehot_mask}
+                        'centroids': centroids}
         return self._state
 
     def seed(self, seed):

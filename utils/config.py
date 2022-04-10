@@ -1,14 +1,28 @@
+import sys
 import os
-# colab
-HARMONIX_DIR = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
-WORK_DIR = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmentation'
-# local
-# DATASET = 'C:\\UR\AIR Lab\\thesis\\dataset\\harmonixset-master\\dataset'
-WORK_DIR = 'C:\\UR\\AIR Lab\\thesis\\online-music-structure-segmentation'
-SALAMI_DIR = 'C:\\UR\\AIR Lab\\thesis\\dataset\\SALAMI\\melspecs'
-SUP_DIR = WORK_DIR + '\\supervised_model\\experiments\\'
-RL_DIR = WORK_DIR + '\\rl\\experiments\\'
+try:
+  import google.colab
+  IN_COLAB = True
+except:
+  IN_COLAB = False
+#IN_COLAB = 'google.colab' in sys.modules
 
+if IN_COLAB:
+    # colab
+    HARMONIX_DIR = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
+    WORK_DIR = '/content/drive/Othercomputers/MyEnvy/online-music-structure-segmentation'
+    SALAMI_DIR = '/content/drive/MyDrive/thesis/dataset/salami-data-public-master'
+elif 'win' in sys.platform:
+    # local
+    HARMONIX_DIR = 'C:\\UR\AIR Lab\\thesis\\dataset\\harmonixset-master\\dataset'
+    WORK_DIR = 'C:\\UR\\AIR Lab\\thesis\\online-music-structure-segmentation'
+    SALAMI_DIR = 'C:\\UR\\AIR Lab\\thesis\\dataset\\SALAMI\\salami-data-public-master'
+elif 'linux' in sys.platform:
+    # lab machine
+    pass
+
+SUP_EXP_DIR = os.path.join(WORK_DIR, 'supervised_model', 'experiments')
+RL_EXP_DIR = os.path.join(WORK_DIR, 'rl', 'experiments')
 
 '''
 {
@@ -36,6 +50,7 @@ BIN_TIME_LEN = 1 / 22050 * 1024
 CHUNK_LEN = 64
 BIN = 80
 EMBEDDING_DIM = 128
+hidden_dim = 128
 
 train_hop_size = 10
 eval_hop_size = 2

@@ -31,29 +31,6 @@ class MyDense(nn.Module):
         return self._relu(self._dense(x))
 
 
-class PointerAttention(nn.Module):
-    def __init__(self, hidden_dim):
-        super(PointerAttention, self).__init__()
-        self._Wq = nn.Linear(hidden_dim, hidden_dim)
-        self._Wk = nn.Linear(hidden_dim, hidden_dim)
-        self._v = nn.Linear(hidden_dim, 1, bias=False)
-    
-    def forward(self, cluster_embeddings, onehot_mask):
-        '''
-        `cluster_embeddings`: (B, k+1, hidden_dim)
-        `onehot_mask`: (B, k+1, num_clusters)
-        '''
-        e = torch.tanh(self._Wq(cluster_embeddings[:, -1, :]).unsqueeze(dim=1) + self._Wk(cluster_embeddings))  # B * k+1 * hidden_dim
-        scores = self._v(e).transpose(-1, -2)  # out: B * 1 * k+1
-        cluster_sum_scores = torch.matmul(scores, onehot_mask.float())  # out: (B, 1, num_clusters)
-        cluster_num = torch.sum(onehot_mask, dim=1, keepdim=True)  # out: (B, 1, num_clusters)
-        out = cluster_sum_scores / cluster_num
-        out = torch.where(out.isnan(), torch.tensor(0, dtype=torch.float).to(out.device), out)
-        #out = cluster_sum_scores
-        out = out.squeeze(1)  # out: (B, num_clusters)
-        # a = F.softmax(scores, dim=1)
-        return out
-
 
 def split_to_chunk_with_hop(song, hop_size):
     tensor_list = []
