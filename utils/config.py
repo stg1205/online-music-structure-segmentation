@@ -19,7 +19,9 @@ elif 'win' in sys.platform:
     SALAMI_DIR = 'C:\\UR\\AIR Lab\\thesis\\dataset\\SALAMI\\salami-data-public-master'
 elif 'linux' in sys.platform:
     # lab machine
-    pass
+    HARMONIX_DIR = '/storage/zewen/harmonixset/dataset'
+    WORK_DIR = '/home/zewen/online-music-structure-segmentation'
+    SALAMI_DIR = '/storage/zewen/salami-data-public'
 
 SUP_EXP_DIR = os.path.join(WORK_DIR, 'supervised_model', 'experiments')
 RL_EXP_DIR = os.path.join(WORK_DIR, 'rl', 'experiments')
