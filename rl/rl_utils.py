@@ -27,29 +27,32 @@ class obs_buffer:
         embedds = obs['embedding_space']
         cur_chunk = obs['cur_chunk']
         centroids = obs['centroids']
-        self._chunk_buffer[ptr] = cur_chunk.squeeze(0)
-        self._embedd_buffer[ptr] = embedds.squeeze(0)
-        self._centroids_buffer[ptr] = centroids.squeeze(0)
+        self._chunk_buffer[ptr] = cur_chunk
+        self._embedd_buffer[ptr] = embedds
+        self._centroids_buffer[ptr] = centroids
 
     def get_batch_by_idx(self, idxs):
         embedds_list = self._embedd_buffer[idxs]
         # sorted by seq_len descending
-        embedds_seq_lens = np.array([embedd.size(0) for embedd in embedds_list])
-        sorted_idx = np.argsort(-embedds_seq_lens)
+        embedds_seq_lens = torch.tensor([embedd.size(0) for embedd in embedds_list])
+        # sorted_idx = np.argsort(-embedds_seq_lens)
         # padding
-        embedds_batch = pack_padded_sequence(
-            pad_sequence(list(embedds_list[sorted_idx]), batch_first=True), 
-            lengths=torch.tensor(embedds_seq_lens[sorted_idx]), batch_first=True)
-        
+        # embedds_batch = pack_padded_sequence(
+        #     pad_sequence(list(embedds_list[sorted_idx]), batch_first=True), 
+        #     lengths=torch.tensor(embedds_seq_lens[sorted_idx]), batch_first=True)
+        print(embedds_seq_lens)
+        embedds_batch = pad_sequence(list(embedds_list), batch_first=True)
         # batch states
-        chunk_batch = self._chunk_buffer[idxs][sorted_idx]
-        centroids_batch = self._centroids_buffer[idxs][sorted_idx]
+        # chunk_batch = self._chunk_buffer[idxs][sorted_idx]
+        # centroids_batch = self._centroids_buffer[idxs][sorted_idx]
+        chunk_batch = self._chunk_buffer[idxs]
+        centroids_batch = self._centroids_buffer[idxs]
         obs_batch = {
             'embedding_space': embedds_batch,
             'cur_chunk': chunk_batch,
             'centroids': centroids_batch
         }
-        return obs_batch, sorted_idx
+        return obs_batch, embedds_seq_lens
 
 
 class ReplayBuffer:
@@ -140,18 +143,20 @@ class ReplayBuffer:
         return self.sample_from_idxs(idxs, beta)
     
     def sample_from_idxs(self, idxs, beta):
-        obs_batch, sorted_idx = self._obs_buffer.get_batch_by_idx(idxs)
-        next_obs_batch, _ = self._next_obs_buffer.get_batch_by_idx(idxs)
+        obs_batch, obs_seq_lens = self._obs_buffer.get_batch_by_idx(idxs)
+        next_obs_batch, next_obs_seq_lens = self._next_obs_buffer.get_batch_by_idx(idxs)
         if self._priority:
             weights = torch.tensor(np.array([self._calculate_weight(i, beta) for i in idxs]))
         else:
             weights = torch.ones(len(idxs))
         return {
             'obs_batch': obs_batch,
+            'obs_seq_lens': obs_seq_lens,
             'next_obs_batch': next_obs_batch,
-            'action_batch': self._action_buffer[idxs][sorted_idx],
-            'reward_batch': self._reward_buffer[idxs][sorted_idx],
-            'done_batch': self._done_buffer[idxs][sorted_idx],
+            'next_obs_seq_lens': next_obs_seq_lens,
+            'action_batch': self._action_buffer[idxs],
+            'reward_batch': self._reward_buffer[idxs],
+            'done_batch': self._done_buffer[idxs],
             'weights': weights,
             'idxs': idxs
         }
@@ -203,16 +208,15 @@ class ReplayBuffer:
 
 def state_to(state, device):
     # add a batch dimension and move to device
-    format_state = {}
-    if isinstance(state['embedding_space'], torch.Tensor) :
-        format_state['embedding_space'] = state['embedding_space'].unsqueeze(0).to(device)
-        format_state['cur_chunk'] = state['cur_chunk'].unsqueeze(0).to(device)
-        format_state['centroids'] = state['centroids'].unsqueeze(0).to(device)
+    if len(state['embedding_space'].size()) < 3:
+        embedds = state['embedding_space'].unsqueeze(0).to(device)
+        cur_chunk = state['cur_chunk'].unsqueeze(0).to(device)
+        centroids = state['centroids'].unsqueeze(0).to(device)
     else:
-        format_state['embedding_space'] = state['embedding_space'].to(device)
-        format_state['cur_chunk'] = state['cur_chunk'].to(device)
-        format_state['centroids'] = state['centroids'].to(device)
-    return format_state
+        embedds = state['embedding_space'].to(device)
+        cur_chunk = state['cur_chunk'].to(device)
+        centroids = state['centroids'].to(device)
+    return embedds, cur_chunk, centroids
 
 def state_out(out):
     out['q'] = out['q'].detach().cpu()
@@ -246,15 +250,26 @@ class Policy:
         select action using epsilon greedy policy
         only can choose up to cur cluster number + 1
         '''
+        #print('take action')
         self._q_net.eval()
         # predict q value
         format_state = state_to(state, self._device)  # has to contain a batch dimension
+        #self._q_net.module.set_mode('infer')
+        self._q_net.set_mode('infer')
         with torch.no_grad():
-            out = self._q_net(format_state, mode='infer')
+            out = self._q_net(*format_state)
+        #self._q_net.module.set_mode('train')
+        self._q_net.set_mode('train')
         self._q_net.train()
         state_out(out)
         feature = out['new_feature']
         cur_cluster_embedd = out['cur_cluster_embedd']
+        try:
+            wandb.log({'explore/q': torch.argmax(out['q'])})
+        except:
+            pass
+        #print(out['q'])
+        #print(torch.argmax(out['q']))
 
         if eps > np.random.random():
             cur_max_cluster = env.get_max_est_label()
@@ -277,16 +292,18 @@ class Policy:
         calculate double dqn loss
         '''
         state = state_to(batch["obs_batch"], self._device)
+        state_lens = batch['obs_seq_lens']
         next_state = state_to(batch["next_obs_batch"], self._device)
+        next_state_lens = batch['next_obs_seq_lens']
         action = batch["action_batch"].reshape(-1, 1).to(self._device)
         reward = batch["reward_batch"].reshape(-1, 1).to(self._device)
         done = batch["done_batch"].reshape(-1, 1).to(self._device)
 
         # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
             #       = r                       otherwise
-        cur_q_value = self._q_net(state, 'train')['q'].gather(1, action)
-        next_q_value = self._target_q_net(next_state, 'train')['q'].gather(  # Double DQN
-                1, self._q_net(next_state, 'train')['q'].argmax(dim=1, keepdim=True)
+        cur_q_value = self._q_net(*state, state_lens)['q'].gather(1, action)
+        next_q_value = self._target_q_net(*next_state, next_state_lens)['q'].gather(  # Double DQN
+                1, self._q_net(*next_state, next_state_lens)['q'].argmax(dim=1, keepdim=True)
             ).detach()
         mask = 1 - done
         target = (reward + gamma * next_q_value * mask).to(self._device)

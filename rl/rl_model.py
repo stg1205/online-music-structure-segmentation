@@ -6,7 +6,7 @@ from utils.modules import MyDense
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_packed_sequence, PackedSequence
+from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 import torch
 
 
@@ -127,38 +127,52 @@ class Backend(nn.Module):
                         num_layers, 
                         num_clusters, 
                         num_heads,
+                        mode,
+                        use_rnn,
                         cluster_encode=True):
         super(Backend, self).__init__()
         self._lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=num_layers, batch_first=True)
         self._attention = PointerAttention(hidden_dim=input_size)
         self._cluster_encode = cluster_encode
         self._num_clusters = num_clusters
+        self._use_rnn = use_rnn
+        self._mode = mode
 
-    def forward(self, feature, embedds, centroids, mode):
+    def forward(self, feature, embedds, centroids, lens):
         '''
         feature: (B, emb_dim)
         embedds: (B, max_seq_len, emb_dim) padding
         `centroids`: (B, num_clusters, hidden_dim)
         '''
         #print(onehot_mask.shape)
-        # lstm encode the past embeddings
-        # if isinstance(embedds, PackedSequence):
-        #     print('embedds', embedds)
-        #     print(pad_packed_sequence(embedds, batch_first=True)[0].isnan().sum())
-        lstm_embedds, (hn, cn) = self._lstm(embedds)  
-        # if isinstance(lstm_embedds, PackedSequence):
-        #     print('lstm_embedds', lstm_embedds)
-        if mode == 'train':
-            lstm_embedds, out_len = pad_packed_sequence(lstm_embedds, batch_first=True)  # out: (batch, max_seq_len, hidden_size), hn: (batch, num_layers, hidden_size)
+        if self._use_rnn:
+            # lstm encode the past embeddings
+            if self._mode == 'train':
+                embedds = pack_padded_sequence(embedds, 
+                                            lengths=lens, 
+                                            batch_first=True,
+                                            enforce_sorted=False)
+            lstm_embedds, (hn, cn) = self._lstm(embedds) 
 
-        # encode the cluster of current embedding
-        zero_encodes = torch.zeros([feature.size(0), self._num_clusters]).to(feature.device)
-        #print(cluster_encodes)
+            if self._mode == 'train':
+                ori_idxs = embedds.unsorted_indices
+                # back to original batch index
+                hn, cn = hn[:, ori_idxs, :], cn[:, ori_idxs, :]
+
+        # # if self._mode == 'train':
+        # #     lstm_embedds, out_len = pad_packed_sequence(lstm_embedds, batch_first=True)  # out: (batch, max_seq_len, hidden_size), hn: (batch, num_layers, hidden_size)
+
         if self._cluster_encode:
+            # encode the cluster of current embedding
+            zero_encodes = torch.zeros([feature.size(0), self._num_clusters]).to(feature.device)
             feature = torch.cat([feature, zero_encodes], dim=1)
 
-        # lstm encode current feature using the previous output
-        cur_cluster_embedd, (h_cur, c_cur) = self._lstm(feature.unsqueeze(1), (hn, cn))
+        # #print(feature)
+        # # lstm encode current feature using the previous output
+        cur_cluster_embedd = feature.unsqueeze(1)
+        if self._use_rnn:
+            cur_cluster_embedd, (h_cur, c_cur) = self._lstm(cur_cluster_embedd, (hn, cn))
+        
         q = self._attention(cur_cluster_embedd, centroids) 
         return q, cur_cluster_embedd
 
@@ -172,7 +186,9 @@ class QNet(nn.Module):
                 num_heads,
                 num_clusters,
                 cluster_encode,
-                freeze_frontend):
+                freeze_frontend,
+                use_rnn,
+                mode='train'):
         super(QNet, self).__init__()
         self._frontend = UnsupEmbedding(input_shape)
         if freeze_frontend:
@@ -182,24 +198,31 @@ class QNet(nn.Module):
                                 num_layers=num_layers, 
                                 num_clusters=num_clusters, 
                                 cluster_encode=cluster_encode,
-                                num_heads=num_heads)
+                                num_heads=num_heads,
+                                use_rnn=use_rnn,
+                                mode=mode)
     
     def load_frontend(self, pretrained):
         checkpoint = torch.load(pretrained)
         self._frontend.load_state_dict(checkpoint['state_dict'])
     
+    def set_mode(self, mode):
+        self._backend._mode = mode
+
     def get_frontend(self):
         return self._frontend
 
-    def forward(self, state, mode):
-        embedds = state['embedding_space']  # (B, max_seq_len, feature)
-        cur_chunk = state['cur_chunk']  # (B, chunk_len, bin)
-        centroids = state['centroids']  # (B, num_clusters, hidden_dim)
+    def forward(self, embedds, cur_chunk, centroids, lens=None):
+        
+        # embedds = state['embedding_space']  # (B, max_seq_len, feature)
+        # cur_chunk = state['cur_chunk']  # (B, chunk_len, bin)
+        # centroids = state['centroids']  # (B, num_clusters, hidden_dim)
         # print(embedds.shape)
         # print(cur_chunk.shape)
         # print(onehot_mask.shape)
+        # print('forward on device {}'.format(embedds.device))
         feature = self._frontend(cur_chunk)
-        q, cur_cluster_embedd = self._backend(feature, embedds, centroids, mode)
+        q, cur_cluster_embedd = self._backend(feature, embedds, centroids, lens)
 
         out = {
             'q': q,

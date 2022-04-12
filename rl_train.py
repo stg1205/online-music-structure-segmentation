@@ -3,11 +3,13 @@ import torch
 from rl import rl_model, omss_env, rl_utils
 from utils import config as cfg
 import torch.nn.functional as F
+import torch.nn as nn
 import numpy as np
 from sklearn.model_selection import train_test_split
 import os
 import wandb
 from tqdm import tqdm
+import time
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,14 +37,16 @@ def validation(q_net, policy, val_dataset, args):
     with torch.no_grad():
         for k in tqdm(range(len(val_dataset))):
             fp = val_dataset[k]
-            env = omss_env.OMSSEnv(q_net.get_frontend(), 
+            env = omss_env.OMSSEnv(#q_net.module.get_frontend(), 
+                                    q_net.get_frontend(),
                                     args.num_clusters, 
                                     fp, 
+                                    args.seq_max_len,  # TODO don't need this in val
                                     cluster_encode=args.cluster_encode, 
                                     mode='test')
             if not env.check_anno():
                 continue
-            state = env.make(device)
+            state = env.make()
             done = False
             while not done:
                 action = policy.take_action(state, env, args.test_eps, args.num_clusters)
@@ -51,7 +55,7 @@ def validation(q_net, policy, val_dataset, args):
                 score += reward.item()
         score /= len(val_dataset)
     q_net.train()
-    return score
+    return score, reward.item()
 
 
 def train(args):
@@ -60,6 +64,7 @@ def train(args):
     torch.manual_seed(args.seed)
 
     # initialize model
+    gpus = [0, 1, 2, 3]
     backend_input_size = cfg.EMBEDDING_DIM + args.num_clusters if args.cluster_encode else cfg.EMBEDDING_DIM
     nets = [rl_model.QNet(input_shape=(cfg.BIN, cfg.CHUNK_LEN),
                             embedding_size=backend_input_size,
@@ -68,6 +73,7 @@ def train(args):
                             num_heads=args.num_heads,
                             num_clusters=args.num_clusters,
                             cluster_encode=args.cluster_encode,
+                            use_rnn=args.use_rnn,
                             freeze_frontend=args.freeze_frontend).to(device) for _ in range(2)]
     q_net = nets[0]
     # load pretrained model
@@ -78,6 +84,10 @@ def train(args):
     target_q_net = nets[1]
     target_q_net.load_state_dict(q_net.state_dict())
     target_q_net.eval()
+    if args.parallel:
+        # q_net, target_q_net = [nn.parallel.DistributedDataParallel(
+        q_net, target_q_net = [nn.DataParallel(
+            net, device_ids=gpus, output_device=gpus[0]) for net in (q_net, target_q_net)]
 
     # prepare dataset (file paths)
     test_idxs = None
@@ -113,7 +123,6 @@ def train(args):
                                         args.n_step, args.priority, args.alpha, args.gamma)
     
     # log
-    import time
     run_id = time.strftime("%m%d%H%M", time.localtime())
     if args.wandb:
         wandb.login(key='1dd98ff229fabf915050f551d8d8adadc9276b51')
@@ -130,38 +139,39 @@ def train(args):
         beta = args.beta
         step_count = 0
         # iterate over train set
+        np.random.shuffle(train_dataset)
         for j in tqdm(range(len(train_dataset))):
-            fp = train_dataset[0]
-            # print(fp)
+            fp = train_dataset[j]
+            print(fp)
             # start a new environment TODO: to save memory, load spectrogram every epoch or load all from training start?
-            env = omss_env.OMSSEnv(q_net.get_frontend(), 
+            env = omss_env.OMSSEnv(#q_net.module.get_frontend(), 
+                                    q_net.get_frontend(), 
                                     args.num_clusters, 
                                     fp, 
+                                    args.seq_max_len,
                                     cluster_encode=args.cluster_encode, 
                                     mode='train')  # TODO: use which frontend?
             if not env.check_anno():
                 continue
-            state = env.make(device)
+            state = env.make()
             done = False
             song_score = 0
             song_update_count = 0
             mean_loss = 0
             # step loop
-            while True:                         
+            tic = time.time()
+            while not done:                         
                 # take action
                 action = policy.take_action(state, env, eps, args.num_clusters)
                 selected_action = action['action']
                 # take a step
                 next_state, reward, done, info = env.step(action)
-                
                 song_score += reward.item()
                 # print(song_score)
-                if done:
-                    break
 
                 # add transition to buffer
                 if args.n_step > 1:
-                    # this will return none if not reaching n_step or the first transition
+                    # this will return none if not reaching n_step else the first transition
                     one_step_transition = n_buffer.store(state, selected_action, reward, next_state, done)
                     if one_step_transition:
                         buffer.store(*one_step_transition)
@@ -174,7 +184,7 @@ def train(args):
                     batch = buffer.sample(args.batch_size, beta)
                     idxs = batch['idxs']
                     n_batch = n_buffer.sample_from_idxs(idxs, beta) if args.n_step > 1  else None
-                    
+
                     ele_wise_loss, loss = policy.update(batch, n_batch, optim)
                     mean_loss += loss.item()
                     
@@ -205,7 +215,9 @@ def train(args):
                             'explore/eps': eps,
                             'explore/beta': beta})
                 step_count += 1
-                    
+
+            toc = time.time()
+            print('an episode takes {}s'.format(toc-tic))
             # reset buffer after iterate over one song  TODO: maybe not useful
             # buffer.reset()
             # n_buffer.reset()
@@ -219,11 +231,12 @@ def train(args):
                 wandb.log(episode_metrics)
         
         # val after one epoch
-        score = validation(q_net, policy, val_dataset, args)
+        score, f1 = validation(q_net, policy, val_dataset, args)
         
         if args.wandb:
             val_metrics = {
-                'val/score': score
+                'val/score': score,
+                'val/f1': f1
             }
             wandb.log(val_metrics)
         checkpoint = {
@@ -245,6 +258,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=8)
     parser.add_argument('--test_idxs', type=str, default=None)
     parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--parallel', action='store_true')
     # embedding model
     parser.add_argument('--pretrained', type=str, default=so_far_best_pretrained)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -253,10 +267,12 @@ if __name__ == '__main__':
     parser.add_argument('--num_heads', type=int, default=1)   # *
     # rl
     # backend
+    parser.add_argument('--seq_max_len', type=int, default=128)
     parser.add_argument('--num_clusters', type=int, default=5)  # *
     parser.add_argument('--cluster_encode', action='store_true')
     #parser.add_argument('--max_grad_norm', type=float, default=2.0)
     parser.add_argument('--freeze_frontend', action='store_true')
+    parser.add_argument('--use_rnn', action='store_true')
 
     parser.add_argument('--epoch_num', type=int, default=10)
     parser.add_argument('--gamma', type=float, default=0.99)

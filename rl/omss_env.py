@@ -13,7 +13,7 @@ import pandas as pd
 from . import rl_utils
 
 '''
-in environment, the mel and embedding shape is (feature_dim, seq_len)
+in environment, the mel and embedding shape is (seq_len, feature_dim)
 '''
 class OMSSEnv(gym.Env):
     """
@@ -35,13 +35,16 @@ class OMSSEnv(gym.Env):
     Episode Termination:
         When a song ends.
     """
-    def __init__(self, frontend_model, num_clusters, file_path, cluster_encode=True, mode='train'):
+    def __init__(self, frontend_model, num_clusters, file_path, seq_max_len, cluster_encode=True, mode='train'):
         super(OMSSEnv, self).__init__()
         self._mode = mode
         self._num_clusters = num_clusters
         self._frontend_model = frontend_model.eval()  # for updating the embedding space
         self._file_path = file_path  # sample song in order
         self._cluster_encode = cluster_encode
+
+        self._embedding_space = None
+        self._seq_max_len = seq_max_len
 
         self._est_labels = []
         if mode =='train':
@@ -55,7 +58,7 @@ class OMSSEnv(gym.Env):
         ## pairwise f1
         self._n_intersection = 0
         self._n_sim_pair_est, self._n_sim_pair_ref = 0, 0
-        self._pairwise_f1 = 0
+        self._pairwise_f1 = []
     
     def get_max_est_label(self):
         return max(self._est_labels)
@@ -93,10 +96,12 @@ class OMSSEnv(gym.Env):
     def check_anno(self):
         return self._labels is not None
 
-    def make(self, device):
+    def make(self):
         self._mel_spec = np.load(self._file_path)  # pre-calculate mel features
         self._mel_spec = torch.from_numpy(self._mel_spec).transpose(0, 1) # out: (seq_len, feature)
-        self.reset(device)
+        # ignore first chunk because the label always starts with 0
+        self._step_len = ((self._mel_spec.shape[0] - (cfg.CHUNK_LEN - 1) - 1) // self._hop_size)  
+        self.reset()
         return self._state
     
     def _update_emb_space(self):
@@ -153,7 +158,8 @@ class OMSSEnv(gym.Env):
         # if reaching the end of a song, return done
         if self._cur_chunk_idx + self._hop_size + chunk_len >= self._mel_spec.shape[0]:
             done = True
-            return None, reward, done, info
+            reward += self._pairwise_f1[-1]  # get a reward on the end of the episode
+            return self.reset(), reward, done, info
         
         # 2. update state
         ### a. update clusters
@@ -167,8 +173,12 @@ class OMSSEnv(gym.Env):
             new_feature = torch.cat([new_feature, cluster_encode], dim=1)
         
         ### b. concatenate new feature to embedding space (seq_len, feature)
-        self._state['embedding_space'] = torch.cat([self._state['embedding_space'], new_feature], dim=0)
-
+        self._embedding_space = torch.cat([self._state['embedding_space'], new_feature], dim=0)
+        if self._embedding_space.shape[0] > self._seq_max_len:
+            self._state['embedding_space'] = self._embedding_space[-self._seq_max_len:]
+        else:
+            self._state['embedding_space'] = self._embedding_space
+        
         # c. update the centroids using ... TODO
         self._update_centroids(cur_cluster_embedd, cluster_num)
 
@@ -226,13 +236,25 @@ class OMSSEnv(gym.Env):
         # print(n_matches)
         # print(sim_pair_vt_est)
         # print()
-        prc = n_matches / n_sim_pair_est if n_sim_pair_est != 0 else 0
-        rec = n_matches / n_sim_pair_ref if n_sim_pair_ref != 0 else 0
-        f1 = rl_utils.f1_measure(prc, rec)
-        
-        return torch.tensor(f1)
+        # prc = n_matches / n_sim_pair_est if n_sim_pair_est != 0 else 0
+        # rec = n_matches / n_sim_pair_ref if n_sim_pair_ref != 0 else 0
+        prc = self._n_intersection / self._n_sim_pair_est if self._n_sim_pair_ref != 0 else 0
+        rec = self._n_intersection / self._n_sim_pair_ref if self._n_sim_pair_ref != 0 else 0
+        f1 = rl_utils.f1_measure(prc, rec, beta=0.5)  # beta=0.5 when more weights on prec
+        step = len(self._est_labels)
+        #print(step/self._step_len)
+        f1 = f1 * step / self._step_len
+        #print(f1)
+        self._pairwise_f1.append(f1)
+        f1_diff = self._pairwise_f1[-1] - self._pairwise_f1[-2]
+        # if cluster_num != self._est_labels[-1] and self._ref_labels[-2] != self._ref_labels[-1]:
+        #     boundary_reward = 1
+        # else:
+        #     boundary_reward = 0
+        # return torch.tensor(f1 + boundary_reward)
+        return torch.tensor(f1_diff)
 
-    def reset(self, device):
+    def reset(self):
         """
         Reset the environment.
         1. embedd the first chunk
@@ -241,8 +263,10 @@ class OMSSEnv(gym.Env):
         # initialize labels
         self._est_labels.append(0)
         self._ref_labels.append(0)
+
+        self._pairwise_f1.append(0)
         # embedd the first chunk
-        chunk = self._mel_spec[0:chunk_len, :].to(device)
+        chunk = self._mel_spec[0:chunk_len, :].to(next(self._frontend_model.parameters()).device)
         #print(chunk.shape)
         self._frontend_model.eval()
         with torch.no_grad():
@@ -256,6 +280,7 @@ class OMSSEnv(gym.Env):
         #onehot_mask = cluster_encode
         centroids = torch.zeros([self._num_clusters, embedd.size(1)])
         centroids[0, :] = embedd
+        self._embedding_space = embedd
         self._state = {'embedding_space': embedd, 
                         'cur_chunk': self._mel_spec[self._hop_size:self._hop_size+chunk_len, :],
                         'centroids': centroids}
