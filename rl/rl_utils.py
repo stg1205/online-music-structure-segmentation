@@ -40,7 +40,7 @@ class obs_buffer:
         # embedds_batch = pack_padded_sequence(
         #     pad_sequence(list(embedds_list[sorted_idx]), batch_first=True), 
         #     lengths=torch.tensor(embedds_seq_lens[sorted_idx]), batch_first=True)
-        print(embedds_seq_lens)
+        # print(embedds_seq_lens)
         embedds_batch = pad_sequence(list(embedds_list), batch_first=True)
         # batch states
         # chunk_batch = self._chunk_buffer[idxs][sorted_idx]
@@ -210,11 +210,11 @@ def state_to(state, device):
     # add a batch dimension and move to device
     if len(state['embedding_space'].size()) < 3:
         embedds = state['embedding_space'].unsqueeze(0).to(device)
-        cur_chunk = state['cur_chunk'].unsqueeze(0).to(device)
+        cur_chunk = state['cur_chunk'].unsqueeze(0).transpose(-1, -2).to(device)
         centroids = state['centroids'].unsqueeze(0).to(device)
     else:
         embedds = state['embedding_space'].to(device)
-        cur_chunk = state['cur_chunk'].to(device)
+        cur_chunk = state['cur_chunk'].transpose(-1, -2).to(device)
         centroids = state['centroids'].to(device)
     return embedds, cur_chunk, centroids
 

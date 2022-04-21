@@ -16,7 +16,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def omss_train_val_test_split(val_pct, test_pct=None, test_idxs=None):
-    mel_dir = os.path.join(cfg.SALAMI_DIR, 'melspecs')
+    mel_dir = os.path.join(cfg.SALAMI_DIR, 'internet_melspecs')
     files = os.listdir(mel_dir)
     fps = np.array(list(map(lambda x: os.path.join(mel_dir, x), files)))
     if test_idxs:
@@ -34,6 +34,8 @@ def omss_train_val_test_split(val_pct, test_pct=None, test_idxs=None):
 def validation(q_net, policy, val_dataset, args):
     q_net.eval()
     score = 0
+    f1 = 0
+    count = len(val_dataset)
     with torch.no_grad():
         for k in tqdm(range(len(val_dataset))):
             fp = val_dataset[k]
@@ -45,17 +47,22 @@ def validation(q_net, policy, val_dataset, args):
                                     cluster_encode=args.cluster_encode, 
                                     mode='test')
             if not env.check_anno():
+                count -= 1
                 continue
             state = env.make()
             done = False
             while not done:
                 action = policy.take_action(state, env, args.test_eps, args.num_clusters)
+                print(action['action'])
                 next_state, reward, done, info = env.step(action)
                 state = next_state
                 score += reward.item()
-        score /= len(val_dataset)
+            f1 += reward.item()
+            # print(reward.item())
+        score /= count
+        f1 /= count
     q_net.train()
-    return score, reward.item()
+    return score, f1
 
 
 def train(args):
@@ -80,6 +87,11 @@ def train(args):
     if len(args.pretrained) > 3:
         q_net.load_frontend(args.pretrained)
         print('load pretrained frontend model!')
+    elif args.resume_path:
+        checkpoint = torch.load(args.resume_path)
+        print(checkpoint['best_score'])
+        q_net.load_state_dict(checkpoint['state_dict'])
+        print('load best q net!')
     # set target network to eval mode
     target_q_net = nets[1]
     target_q_net.load_state_dict(q_net.state_dict())
@@ -138,9 +150,11 @@ def train(args):
         eps = args.train_eps  # TODO: where to put these?
         beta = args.beta
         step_count = 0
+        train_score = 0
         # iterate over train set
         np.random.shuffle(train_dataset)
         for j in tqdm(range(len(train_dataset))):
+            continue
             fp = train_dataset[j]
             print(fp)
             # start a new environment TODO: to save memory, load spectrogram every epoch or load all from training start?
@@ -201,6 +215,7 @@ def train(args):
                 if eps > args.final_train_eps:
                     eps -= (args.train_eps - args.final_train_eps) * args.train_eps_decay
                 
+                print(step_count, eps)
                 # update beta
                 if args.priority:
                     if step_count <= args.beta_anneal_step:
@@ -221,6 +236,7 @@ def train(args):
             # reset buffer after iterate over one song  TODO: maybe not useful
             # buffer.reset()
             # n_buffer.reset()
+            train_score += song_score
             if args.wandb:
                 # record the metric for every song in an epoch
                 episode_metrics = {
@@ -232,9 +248,10 @@ def train(args):
         
         # val after one epoch
         score, f1 = validation(q_net, policy, val_dataset, args)
-        
+        # print(score, f1)
         if args.wandb:
             val_metrics = {
+                'val/train_score': train_score,
                 'val/score': score,
                 'val/f1': f1
             }
@@ -244,8 +261,9 @@ def train(args):
             'state_dict': q_net.state_dict()
         }
         #print(score)
-        if score > best_score:
-            checkpoint['best_score'] = score
+        if f1 > best_score:
+            checkpoint['best_score'] = f1
+            best_score = f1
             torch.save(checkpoint, os.path.join(exp_dir, "best_q_net.pth"))
         torch.save(checkpoint, os.path.join(exp_dir, "last_q_net.pth"))
     wandb.finish()
@@ -256,6 +274,7 @@ if __name__ == '__main__':
     so_far_best_pretrained = os.path.join(cfg.SUP_EXP_DIR, '03020414', 'unsup_embedding_best.pt')
 
     parser.add_argument('--seed', type=int, default=8)
+    parser.add_argument('--freeze_frontend', action='store_true')
     parser.add_argument('--test_idxs', type=str, default=None)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--parallel', action='store_true')
@@ -267,11 +286,12 @@ if __name__ == '__main__':
     parser.add_argument('--num_heads', type=int, default=1)   # *
     # rl
     # backend
+    parser.add_argument('--resume_path', type=str, default=None)
     parser.add_argument('--seq_max_len', type=int, default=128)
     parser.add_argument('--num_clusters', type=int, default=5)  # *
     parser.add_argument('--cluster_encode', action='store_true')
     #parser.add_argument('--max_grad_norm', type=float, default=2.0)
-    parser.add_argument('--freeze_frontend', action='store_true')
+    
     parser.add_argument('--use_rnn', action='store_true')
 
     parser.add_argument('--epoch_num', type=int, default=10)
