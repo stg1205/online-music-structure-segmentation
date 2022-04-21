@@ -48,6 +48,7 @@ mel_hop = 1024
 mel_fmin = 0
 mel_fmax = None
 
+# embedding (frontend) parameters
 BIN_TIME_LEN = 1 / 22050 * 1024
 CHUNK_LEN = 64
 BIN = 80
@@ -57,6 +58,9 @@ hidden_dim = 128
 train_hop_size = 10
 eval_hop_size = 2
 time_lag_len = 20
+
+# RL
+graph_update_freq = 10
 
 # Spectral Clustering Params
 scluster_config = {
