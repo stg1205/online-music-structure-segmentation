@@ -145,10 +145,10 @@ def validation(policy: DQNPolicy, val_dataset, args):
                     
                     # action = policy.take_action(state, env, args.test_eps, args.num_clusters)
                     next_state, reward, done, info = env.step(action)
-                    if args.logger:
-                        wandb.log({
-                            'val/action': action,
-                            'val/reward': reward})
+                    # if args.logger:
+                    #     wandb.log({
+                    #         'val/action': action,
+                    #         'val/reward': reward})
                     state = next_state
                     score += reward
                 f1 += info['f1']
@@ -339,8 +339,12 @@ def train(args=get_args()):
                 
                 train_score += coll_res['rew']  # mean reward
 
-                for _ in range(round(args.update_per_step * coll_res['n/st'])):
-                    losses = policy.update(args.batch_size * args.train_env_batch_size, buffer)
+                # increase batch size with buffer size
+                perc = 1 + len(buffer) / args.buffer_size
+                batch_size = round(perc * args.batch_size)
+                update_times = round(perc * args.update_per_step * coll_res['n/st'])
+                for _ in range(update_times):
+                    losses = policy.update(batch_size * args.train_env_batch_size, buffer)
                     gradient_step += 1
                     if args.logger:
                         logger.log_update_data(losses, gradient_step)
