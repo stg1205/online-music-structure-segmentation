@@ -1,108 +1,114 @@
 from utils import config as cfg
-from rl import rl_model, omss_env, rl_utils
 import torch
 import argparse
 import os
+from tianshou_rl_train import get_args, omss_train_val_test_split, state_to
+from rl import tianshou_rl_model, tianshou_env
+from tianshou.policy import DQNPolicy
+import matplotlib.pyplot as plt
+import numpy as np
+from tqdm import trange
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def test(args):
-    model_path = '/home/zewen/online-music-structure-segmentation/rl/experiments/04111452/best_q_net.pth'
-    song_path = '/storage/zewen/salami-data-public/melspecs/338-mel.npy'
+    # prepare dataset (file paths)
+    test_idxs = None
+    if args.test_idxs:
+        # load test set indexs TODO
+        pass
+    else:
+        train_dataset, val_dataset, test_dataset = omss_train_val_test_split(cfg.val_pct, cfg.test_pct, test_idxs, args)
+    
+    # define model
     backend_input_size = cfg.EMBEDDING_DIM + args.num_clusters if args.cluster_encode else cfg.EMBEDDING_DIM
-    nets = [rl_model.QNet(input_shape=(cfg.BIN, cfg.CHUNK_LEN),
+    net = tianshou_rl_model.QNet(
+                            input_shape=(cfg.BIN, cfg.CHUNK_LEN),
                             embedding_size=backend_input_size,
                             hidden_size=args.hidden_size,
                             num_layers=args.num_layers,
                             num_heads=args.num_heads,
                             num_clusters=args.num_clusters,
                             cluster_encode=args.cluster_encode,
-                            freeze_frontend=args.freeze_frontend,
                             use_rnn=args.use_rnn,
-                            mode='test').to(device) for _ in range(2)]
-    q_net = nets[0]
-    # load pretrained model
-    if len(args.pretrained) > 3:
-        q_net.load_frontend(args.pretrained)
-        print('load pretrained frontend model!')
-    
-    q_net.load_state_dict(torch.load(model_path)['state_dict'])
-    print('load best q net!')
-    # set target network to eval mode
-    target_q_net = nets[1]
-    target_q_net.load_state_dict(q_net.state_dict())
-    target_q_net.eval()
+                            device=device,
+                            freeze_frontend=args.freeze_frontend)
 
     # policy
-    policy = rl_utils.Policy(q_net=q_net, 
-                            target_q_net=target_q_net, 
-                            gamma=args.gamma,
-                            target_update_freq=args.target_update_freq,
-                            n_step=args.n_step,
-                            optim=None,
-                            device=device)
-    
-    env = omss_env.OMSSEnv(#q_net.module.get_frontend(), 
-                                    q_net.get_frontend(),
-                                    args.num_clusters, 
-                                    song_path, 
-                                    args.seq_max_len,  # TODO don't need this in val
-                                    cluster_encode=args.cluster_encode, 
-                                    mode='test')
+    # define policy
+    policy = DQNPolicy(
+        model=net,
+        optim=None,
+        discount_factor=args.gamma,
+        target_update_freq=args.target_update_freq,
+        is_double=True
+    ).to(device)
 
-    done = False
+    # load pretrained model
+    checkpoint = torch.load(args.resume_path, map_location=device)
+    policy.load_state_dict(checkpoint['state_dict'])
+    best_score = checkpoint['best_score']
+    print('best score: ', best_score)
+    print("Loaded agent from: ", args.resume_path)
+
+    # result dir
+    res_dir = os.path.join(args.resume_path.split('.')[0][:-12], 'test_figs')
+    if not os.path.exists(res_dir):
+        os.makedirs(res_dir)
+    print(res_dir)
+    # test loop
+    q_net = policy.model
+    q_net.eval()
+    frontend = q_net.get_frontend()
     score = 0
-    state = env.make()
-    done = False
-    while not done:
-        # print(state)
-        action = policy.take_action(state, env, args.test_eps, args.num_clusters)
-        next_state, reward, done, info = env.step(action)
-        state = next_state
-        score += reward.item()
+    f1 = 0
+    with torch.no_grad():
+        with trange(len(val_dataset)) as t:
+            for k in t:
+                fp = val_dataset[k]
+                print(fp)
+                env = tianshou_env.OMSSEnv(#q_net.module.get_frontend(), 
+                                        frontend,
+                                        args.num_clusters, 
+                                        fp, 
+                                        args.seq_max_len,  # TODO don't need this in val
+                                        cluster_encode=args.cluster_encode, 
+                                        mode='test')
+                song_action_list = [0]
+                state = env.reset()
+                done = False
+                while not done:
+                    format_state = state_to(state, device)
+                    logits = policy.model(format_state)[0].detach().cpu().numpy()
+                    # print(logits)
+                    action = np.argmax(logits)
+                    # print(action)
+                    song_action_list.append(int(action))
+                    
+                    # action = policy.take_action(state, env, args.test_eps, args.num_clusters)
+                    next_state, reward, done, info = env.step(action)
+                    state = next_state
+                    score += reward
+                f1 += info['f1']
+                t.set_description('f1: {}'.format(info['f1']))
+
+                # plot result for current song
+                x = (np.arange(len(song_action_list)) * cfg.eval_hop_size * cfg.BIN_TIME_LEN \
+                    + (cfg.CHUNK_LEN - cfg.time_lag_len) * cfg.BIN_TIME_LEN)
+                plt.figure(figsize=(12.8, 4.8))
+                plt.plot(x, song_action_list, 'o', markersize=2)
+                plt.xlabel('time / s')
+                plt.yticks(range(0, args.num_clusters))
+                plt.ylabel('action')
+                song_num = fp.split('specs')[-1].split('.')[0][1:-4]
+                plt.title('Song No. {}, f1: {}'.format(song_num, info['f1']))
+                #print(res_dir)
+                plt.savefig(os.path.join(res_dir, song_num + '.jpg'))
+                plt.close()
+
+        score /= len(val_dataset)
+        f1 /= len(val_dataset)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-
-    so_far_best_pretrained = os.path.join(cfg.SUP_EXP_DIR, '03020414', 'unsup_embedding_best.pt')
-
-    parser.add_argument('--seed', type=int, default=8)
-    parser.add_argument('--test_idxs', type=str, default=None)
-    parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--parallel', action='store_true')
-    # embedding model
-    parser.add_argument('--pretrained', type=str, default=so_far_best_pretrained)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--hidden_size', type=int, default=128)  #*
-    parser.add_argument('--num_layers', type=int, default=1)    #*
-    parser.add_argument('--num_heads', type=int, default=1)   # *
-    # rl
-    # backend
-    parser.add_argument('--seq_max_len', type=int, default=128)
-    parser.add_argument('--num_clusters', type=int, default=5)  # *
-    parser.add_argument('--cluster_encode', action='store_true')
-    #parser.add_argument('--max_grad_norm', type=float, default=2.0)
-    parser.add_argument('--freeze_frontend', action='store_true')
-
-    parser.add_argument('--epoch_num', type=int, default=10)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--target_update_freq', type=int, default=100)
-    ## eps greedy search
-    parser.add_argument('--train_eps', type=float, default=1.)  
-    parser.add_argument('--final_train_eps', type=float, default=0.05)
-    parser.add_argument('--train_eps_decay', type=float, default=1/2000)
-    parser.add_argument('--test_eps', type=float, default=0.)
-    ## priority buffer
-    parser.add_argument('--priority', action='store_true')
-    parser.add_argument('--prior_eps', type=float, default=1e-6)
-    parser.add_argument('--alpha', type=float, default=0.2)
-    parser.add_argument('--beta', type=float, default=0.4)
-    parser.add_argument('--beta_anneal_step', type=int, default=1e5)  # 400 * n_song
-    parser.add_argument('--final_beta', type=float, default=1.)
-    ## buffer
-    parser.add_argument('--buffer_size', type=int, default=128)
-    parser.add_argument('--batch_size', type=int, default=64)
-    ## n step
-    parser.add_argument('--n_step', type=int, default=3)
-    args = parser.parse_args()
+    args = get_args()
     test(args)
