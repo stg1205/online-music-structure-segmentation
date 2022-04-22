@@ -127,7 +127,7 @@ class OMSSEnv(gym.Env):
     
     def _update_centroids(self, cur_cluster_embedd, cluster_num):
         pre_centroid = self._state['centroids'][cluster_num]
-        N = (np.array(self._est_labels) == cluster_num).sum()
+        N = (np.array(self._est_labels) == cluster_num).sum() - 1
         centroid = (N * pre_centroid + cur_cluster_embedd.squeeze(0)) / (N + 1)
         self._state['centroids'][cluster_num] = centroid
     
