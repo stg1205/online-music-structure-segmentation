@@ -329,7 +329,9 @@ def train(args=get_args()):
 
                 # collect one episode
                 train_fn(epoch, env_step)
+                policy.eval()
                 coll_res = train_collector.collect(n_episode=round(args.train_env_batch_size * 1.5))
+                policy.train()
                 t.set_description('Epoch:[{}/{}], reward:{:.5f}, n_st:{}'.format(epoch, args.epoch_num, coll_res['rew'], coll_res['n/st']))
                 
                 # log train data
@@ -342,7 +344,9 @@ def train(args=get_args()):
                 # increase batch size with buffer size
                 perc = 1 + len(buffer) / args.buffer_size
                 batch_size = round(perc * args.batch_size)
+                print(batch_size)
                 update_times = round(perc * args.update_per_step * coll_res['n/st'])
+                print(update_times)
                 for _ in range(update_times):
                     losses = policy.update(batch_size * args.train_env_batch_size, buffer)
                     gradient_step += 1
