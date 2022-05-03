@@ -25,7 +25,7 @@ class MyDense(nn.Module):
     def __init__(self, in_features, out_features):
         super(MyDense, self).__init__()
         self._dense = nn.Linear(in_features, out_features)
-        self._relu = nn.ReLU()
+        self._relu = nn.LeakyReLU()
 
     def forward(self, x):
         return self._relu(self._dense(x))
