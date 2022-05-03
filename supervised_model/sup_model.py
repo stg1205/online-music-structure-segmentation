@@ -8,14 +8,14 @@ sys.path.append('..')
 from utils.modules import MyConv2d
 from utils.modules import MyDense
 
-class UnsupEmbedding(nn.Module):
+class Frontend(nn.Module):
     '''
     Model from the paper "Unsupervised learning of deep features for music segmentation"
     Three Conv2d -> three dense layers    
     replace the kernel with (3, 3) and padding with (2, 2)
     '''
-    def __init__(self, input_shape, channels=64):
-        super(UnsupEmbedding, self).__init__()
+    def __init__(self, input_shape, channels=64, embedding_dim=128):
+        super(Frontend, self).__init__()
         # (batch, channel, f_bin, time_bin) = B， 1， 80， 64
 
         # self._conv1 = MyConv2d(1, channels, kernel_size=(6, 4), pooling=(2, 4))  # 
@@ -28,9 +28,15 @@ class UnsupEmbedding(nn.Module):
 
         dense_in = int(4*channels * input_shape[0]/2**3 * input_shape[1]/2**3)
         
+        # unsup embedding model structure
+        # self._dense1 = MyDense(dense_in, 128)
+        # self._dense2 = MyDense(128, 128)
+        # self._dense3 = MyDense(128, 128)
+
+        # supervised metric learning structure
         self._dense1 = MyDense(dense_in, 128)
-        self._dense2 = MyDense(128, 128)
-        self._dense3 = MyDense(128, 128)
+        self._bm = nn.BatchNorm1d(128)
+        self._dense2 = nn.Linear(128, embedding_dim)
     
     def forward(self, x):
         x = torchaudio.transforms.AmplitudeToDB()(x)
@@ -40,21 +46,17 @@ class UnsupEmbedding(nn.Module):
         x = self._conv3(x)
         
         x = x.reshape(x.size(0), -1)
+
+        # unsup embedding
+        # x = self._dense1(x)
+        # x = self._dense2(x)
+        # x = self._dense3(x)
+
+        # supervised metric learning
         x = self._dense1(x)
+        x = self._bm(x)
         x = self._dense2(x)
-        x = self._dense3(x)
+        
         out = F.normalize(x, p=2, dim=1)
 
         return out
-
-
-class FrontEnd(nn.Module):
-    '''Supervised metric learning model.
-    Also the front-end of the policy model to output features.
-    '''
-    def __init__(self, input_shape) -> None:
-        super(FrontEnd, self).__init__()
-
-    
-    def forward(self):
-        pass
