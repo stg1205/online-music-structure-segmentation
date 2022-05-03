@@ -10,7 +10,7 @@ from tqdm import trange
 from torch.utils.data import DataLoader, random_split
 import torch
 from pytorch_metric_learning.losses import MultiSimilarityLoss
-from utils.msaf_validation import scluster
+from utils.msaf_validation import scluster_eval
 
 from supervised_model.mss_data import HarmonixDataset, SongDataset
 from supervised_model.sup_model import Frontend
@@ -73,7 +73,7 @@ def validate(model, val_loader, criterion, args):
                 song_embedding = song_embedding.cpu().detach().numpy()
                 ref_times = ref_times.cpu().detach().numpy()
                 ref_labels = ref_labels.cpu().detach().numpy()
-                res = scluster(song_embedding, ref_times, ref_labels[:-1])
+                res = scluster_eval(song_embedding, ref_times, ref_labels[:-1])
                 score = 5/14*res['HitRate_0.5F'] + 2/14*res['HitRate_3F'] + 4/14*res['PWF'] + 3/14*res['Sf']
                 score_sum += score
                 for k in seg_metric:

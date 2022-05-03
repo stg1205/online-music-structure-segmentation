@@ -17,8 +17,13 @@ def idx_to_time(boundary_ids, mode='last'):
 def time_to_interval(times):
     return np.array(list(zip(times[:-1], times[1:])))
 
-def read_ref_file(fp):
-    label_df = pd.read_csv(fp, sep=' ', header=None, names=['time', 'label'])
+def read_ref_file(fp, dataset):
+    if dataset == 'harmonix':
+        sep = ' '
+    elif dataset == 'salami':
+        sep = '\t'
+    
+    label_df = pd.read_csv(fp, sep=sep, header=None, names=['time', 'label'])
     times, labels = np.array(label_df['time'], dtype='float32'), label_df['label']
 
     labels = labels.str.replace('\d+', '')
@@ -27,7 +32,20 @@ def read_ref_file(fp):
     
     return times, np.array(labels[:-1])
 
-def scluster(embeddings, ref_times, ref_labels):
+def eval_seg(est_times, est_labels, ref_times, ref_labels):
+    # Make sure the indices are integers
+    est_intervals = time_to_interval(est_times)
+    ref_intervals = time_to_interval(ref_times)
+
+    res = msaf.eval.compute_results(ref_intervals, 
+                                    est_intervals, 
+                                    ref_labels, 
+                                    est_labels,
+                                    bins=251, 
+                                    est_file='eval')
+    return res
+
+def scluster_eval(embeddings, ref_times, ref_labels):
     '''
     reference: 
     https://librosa.org/doc/0.9.1/auto_examples/plot_segmentation.html?highlight=feature%20sync
@@ -77,13 +95,8 @@ def scluster(embeddings, ref_times, ref_labels):
     assert len(est_idxs) - 1 == len(est_labels), "Number of boundaries " \
                 "(%d) and number of labels(%d) don't match" % (len(est_idxs),
                                                             len(est_labels))
-    # Make sure the indices are integers
     est_idxs = np.asarray(est_idxs, dtype=int)
     est_times = idx_to_time(est_idxs, mode='last')
-    est_intervals = time_to_interval(est_times)
-
-    ref_intervals = time_to_interval(ref_times)
-    res = msaf.eval.compute_results(ref_intervals, est_intervals, ref_labels, est_labels,
-                                bins=251, est_file='fwaefwefwefweafewafweaf')
+    res = eval_seg(est_times, est_labels, ref_times, ref_labels)
     
     return res

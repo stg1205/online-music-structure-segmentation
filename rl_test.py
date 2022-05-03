@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import trange
 from links_cluster import LinksCluster
+from utils.msaf_validation import eval_seg
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -89,14 +90,24 @@ def test(args):
     if not args.freeze_frontend:
         frontend = q_net.get_frontend()
     
-    score = 0
-    f1 = 0
+    metrics = {
+        'HitRate_3F': 0, 
+        'HitRate_3P': 0,
+        'HitRate_3R': 0,
+        'HitRate_0.5F': 0, 
+        'HitRate_0.5P': 0,
+        'HitRate_0.5R': 0,
+        'PWF': 0, 
+        'PWP': 0,
+        'PWR': 0,
+        'score': 0
+    }
     with torch.no_grad():
         with trange(len(val_dataset)) as t:
             for k in t:
                 fp = val_dataset[k]
-                if not fp.split('/')[-1].startswith('0603'):
-                    continue
+                # if not fp.split('/')[-1].startswith('0603'):
+                #     continue
                 print(fp)
                 env = tianshou_env.OMSSEnv(#q_net.module.get_frontend(), 
                                         frontend,
@@ -112,30 +123,37 @@ def test(args):
                 done = False
                 song_score = 0
                 song_reward_list = [0]
+                est_idxs = [0]
+                pre_action = 0
+                idx = 1
                 while not done:
                     format_state = state_to(state, device, args=args)
                     logits = policy.model(format_state)[0].detach().cpu().numpy()
-                    # print(logits)
                     action = np.argmax(logits)
-                    # print(action)
                     song_action_list.append(int(action))
                     label_list.append(env._ref_labels[-1])
 
-                    # action = policy.take_action(state, env, args.test_eps, args.num_clusters)
                     next_state, reward, done, info = env.step(action)
                     state = next_state
-                    score += reward
+
+                    metrics['score'] += reward
                     song_score += reward
                     song_reward_list.append(int(reward))
-                f1 += info['f1']
-                t.set_description('f1: {}'.format(info['f1']))
 
+                    # boundary evaluation
+                    if int(action) != pre_action:
+                        pre_action = action
+                        est_idxs.append(idx)
+                    
+                    idx += 1
+                
                 # plot result for current song
-                x = (np.arange(len(song_action_list)) * cfg.eval_hop_size * cfg.BIN_TIME_LEN \
+                times = (np.arange(len(song_action_list)) * cfg.eval_hop_size * cfg.BIN_TIME_LEN \
                     + (cfg.CHUNK_LEN - cfg.time_lag_len) * cfg.BIN_TIME_LEN)
+                
                 plt.rcParams['figure.figsize'] = (20, 12)
                 plt.subplot(3, 1, 1)
-                plt.plot(x, song_action_list, 'o', markersize=2)
+                plt.plot(times, song_action_list, 'o', markersize=2)
                 plt.xlabel('time / s')
                 plt.yticks(range(0, args.num_clusters))
                 plt.ylabel('action')
@@ -143,20 +161,45 @@ def test(args):
                 plt.title('Song No. {}, f1: {}, score: {}'.format(song_num, info['f1'], song_score))
 
                 plt.subplot(3, 1, 2)
-                plt.plot(x, song_reward_list, 'o', markersize=2)
+                plt.plot(times, song_reward_list, 'o', markersize=2)
                 plt.xlabel('time / s')
                 plt.ylabel('reward')
 
                 plt.subplot(3, 1, 3)
-                plt.plot(x, label_list, 'o', markersize=2)
+                plt.plot(times, label_list, 'o', markersize=2)
                 plt.xlabel('time / s')
                 plt.ylabel('label')
                 #print(res_dir)
                 plt.savefig(os.path.join(res_dir, song_num + '.jpg'))
                 plt.close()
 
-        score /= len(val_dataset)
-        f1 /= len(val_dataset)
+                # boundary evaluation              
+                est_seg_labels = np.array(song_action_list)[est_idxs]
+                est_idxs.append(len(song_action_list) - 1)
+                
+                est_times = times[est_idxs]
+                
+                res = eval_seg(est_times, 
+                                est_seg_labels, 
+                                env._times, 
+                                env._labels[:-1])
+                
+                for k in metrics:
+                    if k != 'score':
+                        metrics[k] += res[k]
+
+                t.set_description('f1: {}, '.format(info['f1']))
+                with open(os.path.join(res_dir, song_num + '.json'), 'w') as f:
+                    f.write(str(res).replace("'", '"'))
+                    f.close()
+
+        # save overall result
+        for k in metrics:
+            metrics[k] /= len(val_dataset)
+        with open(os.path.join(res_dir, 'res.json'), 'w') as f:
+            f.write(str(metrics).replace("'", '"'))
+            f.close()
+
 
 def test_links(args):
     # prepare dataset (file paths)
