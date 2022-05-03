@@ -27,7 +27,7 @@ class HarmonixDataset(tud.Dataset):
         data_dir = os.path.join(cfg.HARMONIX_DIR, data)
         label_dir = os.path.join(cfg.HARMONIX_DIR, 'segments')
         for f in os.listdir(data_dir):
-            if not f.endswith(data_format):
+            if not f.endswith(data_format) or f.startswith('.'):
                 continue
             data_path = os.path.join(data_dir, f)
             song_name = f[:-8]  # -mel.npy
@@ -42,6 +42,7 @@ class HarmonixDataset(tud.Dataset):
         return len(self._data_paths)
     
     def __getitem__(self, index):
+        # print(self._data_paths[index])
         data = np.load(self._data_paths[index])  # (mels, time)
         #print(self._data_paths[index])
         if self._transform is not None:
