@@ -2,6 +2,8 @@ import argparse
 import datetime
 import os
 import pprint
+from tty import CFLAG
+from supervised_model.sup_model import Frontend
 from utils import config as cfg
 import time
 
@@ -24,18 +26,26 @@ from tqdm import tqdm, trange
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def state_to(state, device):
+def state_to(state, device, args):
     embedds = torch.as_tensor(state['embedding_space'][np.newaxis, ...]).to(device)
-    cur_chunk = torch.as_tensor(state['cur_chunk'][np.newaxis, ...]).to(device)
     centroids = torch.as_tensor(state['centroids'][np.newaxis, ...]).to(device)
     lens = state['lens'][np.newaxis, ...]
-
-    return {
-        'embedding_space': embedds,
-        'cur_chunk': cur_chunk,
-        'centroids': centroids,
-        'lens': lens
-    }
+    if args.freeze_frontend:
+        cur_embedding = torch.as_tensor(state['cur_embedding'][np.newaxis, ...]).to(device)
+        return {
+            'embedding_space': embedds,
+            'cur_embedding': cur_embedding,
+            'centroids': centroids,
+            'lens': lens
+        }
+    else:
+        cur_chunk = torch.as_tensor(state['cur_chunk'][np.newaxis, ...]).to(device)
+        return {
+            'embedding_space': embedds,
+            'cur_chunk': cur_chunk,
+            'centroids': centroids,
+            'lens': lens
+        }
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -44,7 +54,6 @@ def get_args():
     # experiment set up
     parser.add_argument('--name', type=str)
     parser.add_argument('--seed', type=int, default=8)
-    parser.add_argument('--test-idxs', type=str, default=None)
     parser.add_argument("--resume-path", type=str, default=None)
     parser.add_argument('--pretrained', type=str, default=None)
     parser.add_argument(
@@ -92,10 +101,19 @@ def get_args():
     
     return parser.parse_args()
 
+def rm_invalid_mel_fp(files):
+    valid_files = []
+    for f in files:
+        if f.startswith('.') or not f.endswith('npy'):
+            continue
+        valid_files.append(f)
+    
+    return valid_files
 
 def omss_train_val_test_split(val_pct, test_pct, test_idxs, args):
     mel_dir = os.path.join(cfg.SALAMI_DIR, 'internet_melspecs')
     files = os.listdir(mel_dir)
+    files = rm_invalid_mel_fp(files)
     fps = np.array(list(map(lambda x: os.path.join(mel_dir, x), files)))
     if test_idxs:
         test_dataset = fps[test_idxs]
@@ -108,11 +126,29 @@ def omss_train_val_test_split(val_pct, test_pct, test_idxs, args):
     
     return train_dataset, val_dataset, test_dataset
 
+def omss_train_val_split(val_pct, val_files, args):
+    if cfg.dataset == 'salami':
+        mel_dir = os.path.join(cfg.SALAMI_DIR, 'internet_melspecs')
+    elif cfg.dataset == 'harmonix':
+        mel_dir = os.path.join(cfg.HARMONIX_DIR, 'melspecs')
 
-def validation(policy: DQNPolicy, val_dataset, args):
+    files = os.listdir(mel_dir)
+    files = rm_invalid_mel_fp(files)
+    if val_files is not None:
+        train_files = np.setdiff1d(files, val_files, assume_unique=True)
+    else:
+        train_files, val_files = train_test_split(files, test_size=val_pct, random_state=args.seed)
+    train_dataset = np.array(list(map(lambda x: os.path.join(mel_dir, x), train_files)))
+    val_dataset = np.array(list(map(lambda x: os.path.join(mel_dir, x), val_files)))
+
+    return train_dataset, val_dataset
+
+def validation(policy: DQNPolicy, val_dataset, args, frontend=None):
     q_net = policy.model
     q_net.eval()
-    frontend = q_net.get_frontend()
+    if not args.freeze_frontend:
+        frontend = q_net.get_frontend()
+    
     score = 0
     f1 = 0
     count = len(val_dataset)
@@ -130,6 +166,7 @@ def validation(policy: DQNPolicy, val_dataset, args):
                                         fp, 
                                         args.seq_max_len,  # TODO don't need this in val
                                         cluster_encode=args.cluster_encode, 
+                                        freeze_frontend=args.freeze_frontend,
                                         mode='test')
                 if not env.check_anno():
                     count -= 1
@@ -137,7 +174,7 @@ def validation(policy: DQNPolicy, val_dataset, args):
                 state = env.reset()
                 done = False
                 while not done:
-                    format_state = state_to(state, device)
+                    format_state = state_to(state, device, args=args)
                     logits = policy.model(format_state)[0].detach().cpu().numpy()
                     # print(logits)
                     action = np.argmax(logits)
@@ -157,7 +194,6 @@ def validation(policy: DQNPolicy, val_dataset, args):
         score /= count
         f1 /= count
     
-    q_net.train()
     return score, f1
 
 
@@ -167,32 +203,50 @@ def train(args=get_args()):
     torch.manual_seed(args.seed)
 
     # prepare dataset (file paths)
-    test_idxs = None
-    if args.test_idxs:
-        # load test set indexs TODO
-        test_idxs = []
-    train_dataset, val_dataset, test_dataset = omss_train_val_test_split(cfg.val_pct, cfg.test_pct, test_idxs, args)
+    test_csv = cfg.test_csv
+    if test_csv:
+        # load test set indexs
+        import pandas as pd
+        test_files = np.array(pd.read_csv(test_csv, header=None)[0])
+    else:
+        test_files = None
+    # train_dataset, val_dataset, test_dataset = omss_train_val_test_split(cfg.val_pct, cfg.test_pct, test_idxs, args)
+    train_dataset, val_dataset = omss_train_val_split(cfg.val_pct, test_files, args)
+    print(len(train_dataset))
 
     # define model
     backend_input_size = cfg.EMBEDDING_DIM + args.num_clusters if args.cluster_encode else cfg.EMBEDDING_DIM
-    net = tianshou_rl_model.QNet(
-        input_shape=(cfg.BIN, cfg.CHUNK_LEN),
-                            embedding_size=backend_input_size,
-                            hidden_size=args.hidden_size,
-                            num_layers=args.num_layers,
-                            num_heads=args.num_heads,
-                            num_clusters=args.num_clusters,
-                            cluster_encode=args.cluster_encode,
-                            use_rnn=args.use_rnn,
-                            device=device,
-                            freeze_frontend=args.freeze_frontend
-    )
-    if args.pretrained:
-        net.load_frontend(args.pretrained)
-    if args.freeze_frontend:
-        optim = torch.optim.Adam(net._backend.parameters(), lr=args.lr)
+    if not args.freeze_frontend:
+        net = tianshou_rl_model.QNet(
+            input_shape=(cfg.BIN, cfg.CHUNK_LEN),
+                                embedding_size=backend_input_size,
+                                hidden_size=args.hidden_size,
+                                num_layers=args.num_layers,
+                                num_heads=args.num_heads,
+                                num_clusters=args.num_clusters,
+                                cluster_encode=args.cluster_encode,
+                                use_rnn=args.use_rnn,
+                                device=device,
+                                freeze_frontend=args.freeze_frontend
+        )
+        if args.pretrained:
+            net.load_frontend(args.pretrained)
     else:
-        optim = torch.optim.Adam(net.parameters(), lr=args.lr)
+        net = tianshou_rl_model.TianshouBackend(input_size=backend_input_size,
+                                        hidden_size=args.hidden_size,
+                                        num_layers=args.num_layers,
+                                        num_clusters=args.num_clusters,
+                                        num_heads=args.num_heads,
+                                        mode='train',
+                                        use_rnn=args.use_rnn,
+                                        device=device,
+                                        cluster_encode=args.cluster_encode)
+        
+        checkpoint = torch.load(args.pretrained)
+        frontend = Frontend((cfg.BIN, cfg.CHUNK_LEN), embedding_dim=cfg.EMBEDDING_DIM)
+        frontend.load_state_dict(checkpoint['state_dict'])
+
+    optim = torch.optim.Adam(net.parameters(), lr=args.lr)
             
     # define policy
     policy = DQNPolicy(
@@ -269,25 +323,37 @@ def train(args=get_args()):
     # load a previous policy
     if args.resume_path:
         checkpoint = torch.load(args.resume_path, map_location=device)
-        policy.load_state_dict(checkpoint['state_dict'])
+        try:
+            policy.load_state_dict(checkpoint['state_dict'])
+        except:
+            # just load backend parameters
+            state_dict = checkpoint['state_dict']
+            for k in list(state_dict.keys()):
+                if k.startswith('model_old'):
+                    state_dict[k.replace('model_old', 'model_old._backend')] = state_dict.pop(k)
+                else:
+                    state_dict[k.replace('model', 'model._backend')] = state_dict.pop(k)  
+            policy.load_state_dict(state_dict, strict=False)
+        
         best_score = checkpoint['best_score']
+        best_f1 = checkpoint['best_f1']
         print('best score: ', best_score)
         print("Loaded agent from: ", args.resume_path)
     else:
         best_score = 0
+        best_f1 = 0
     
     gradient_step = 0
     env_step = 0
     # train loop
     for epoch in range(args.epoch_num):
         # iterate over train set
-        np.random.shuffle(train_dataset)
+        # np.random.shuffle(train_dataset)
         env_batch = []
         batch_count = 1
         train_score = 0
         train_loss = 0
         
-        policy.train()
         with trange(len(train_dataset)) as t:
         # for j in tqdm(range(len(train_dataset))):
             for j in t:
@@ -298,7 +364,9 @@ def train(args=get_args()):
                 fp = train_dataset[j]
                 env_batch.append(fp)
                 print(fp)
-                frontend = net.get_frontend()
+
+                if not args.freeze_frontend:
+                    frontend = net.get_frontend()
 
                 # TODO ugly, but would be removed after washing dataset
                 # env = tianshou_env.OMSSEnv(frontend,   # TODO cpu device?
@@ -319,6 +387,7 @@ def train(args=get_args()):
                                         x, 
                                         args.seq_max_len,
                                         cluster_encode=args.cluster_encode, 
+                                        freeze_frontend=args.freeze_frontend,
                                         mode='train') for fp in env_batch])
                 env_batch = []
                 train_collector = Collector(policy, train_envs, buffer, exploration_noise=True)
@@ -332,6 +401,8 @@ def train(args=get_args()):
                 policy.eval()
                 coll_res = train_collector.collect(n_episode=round(args.train_env_batch_size * 1.5))
                 policy.train()
+                if not args.freeze_frontend:
+                    policy.model._freeze_bm()
                 t.set_description('Epoch:[{}/{}], reward:{:.5f}, n_st:{}'.format(epoch, args.epoch_num, coll_res['rew'], coll_res['n/st']))
                 
                 # log train data
@@ -344,9 +415,7 @@ def train(args=get_args()):
                 # increase batch size with buffer size
                 perc = 1 + len(buffer) / args.buffer_size
                 batch_size = round(perc * args.batch_size)
-                print(batch_size)
                 update_times = round(perc * args.update_per_step * coll_res['n/st'])
-                print(update_times)
                 for _ in range(update_times):
                     losses = policy.update(batch_size * args.train_env_batch_size, buffer)
                     gradient_step += 1
@@ -394,7 +463,10 @@ def train(args=get_args()):
         train_score /= batch_count
         train_loss /= batch_count
         # validation
-        val_score, f1 = validation(policy, val_dataset, args)
+        if not args.freeze_frontend:
+            val_score, f1 = validation(policy, val_dataset, args)
+        else:
+            val_score, f1 = validation(policy, val_dataset, args, frontend)
         # log validation metrics
         if args.logger:
             # logger.write('val', epoch, {'val_score': val_score, 
@@ -409,13 +481,18 @@ def train(args=get_args()):
         # save model
         checkpoint = {
             'best_score': best_score,
+            'best_f1': best_f1,
             'state_dict': policy.state_dict()
         }
         #print(score)
-        if f1 > best_score:
-            checkpoint['best_score'] = f1
-            best_score = f1
-            torch.save(checkpoint, os.path.join(exp_dir, "best_policy.pth"))
+        if val_score > best_score:
+            checkpoint['best_score'] = val_score
+            best_score = val_score
+            torch.save(checkpoint, os.path.join(exp_dir, "best_score_policy.pth"))
+        if f1 > best_f1:
+            checkpoint['best_f1'] = f1
+            best_f1 = f1
+            torch.save(checkpoint, os.path.join(exp_dir, 'best_f1_policy.pth'))
         torch.save(checkpoint, os.path.join(exp_dir, "last_policy.pth"))
 
 if __name__ == "__main__":

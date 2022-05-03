@@ -7,6 +7,9 @@ except:
   IN_COLAB = False
 #IN_COLAB = 'google.colab' in sys.modules
 
+dataset = 'harmonix'
+test_csv = 'val.csv'
+
 if IN_COLAB:
     # colab
     HARMONIX_DIR = '/content/drive/MyDrive/thesis/dataset/harmonixset-master/dataset'
@@ -52,7 +55,7 @@ mel_fmax = None
 BIN_TIME_LEN = 1 / 22050 * 1024
 CHUNK_LEN = 64
 BIN = 80
-EMBEDDING_DIM = 128
+EMBEDDING_DIM = 32
 hidden_dim = 128
 
 train_hop_size = 10
@@ -60,7 +63,9 @@ eval_hop_size = 2
 time_lag_len = 20
 
 # RL
-graph_update_freq = 10
+graph_update_freq = 100
+MIN_SEG_LEN = 5  # second
+MAX_SEG_LEN = 130
 
 # Spectral Clustering Params
 scluster_config = {

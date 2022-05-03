@@ -13,6 +13,8 @@ import torch
 import torch.nn.functional as F
 import pandas as pd
 from . import rl_utils
+from scipy.optimize import linear_sum_assignment
+
 
 '''
 in environment, the mel and embedding shape is (seq_len, feature_dim)
@@ -42,10 +44,12 @@ class OMSSEnv(gym.Env):
                 num_clusters, 
                 file_path, 
                 seq_max_len, 
+                freeze_frontend,
                 cluster_encode=True, 
                 mode='train'):
         super(OMSSEnv, self).__init__()
         self._mode = mode
+        self._freeze_frontend = freeze_frontend
         self._num_clusters = num_clusters
         self._frontend_model = frontend_model.eval()  # for updating the embedding space
         self._file_path = file_path  # sample song in order
@@ -66,14 +70,23 @@ class OMSSEnv(gym.Env):
         # tianshou
         self.action_space = gym.spaces.Discrete(self._num_clusters)
         embedd_size = cfg.EMBEDDING_DIM + num_clusters if cluster_encode else cfg.EMBEDDING_DIM
-        self.observation_space = spaces.Dict({
-            'embedding_space': spaces.Box(low=np.Inf, high=np.Inf, shape=(seq_max_len, embedd_size)),
-            'cur_chunk': spaces.Box(low=np.Inf, high=np.Inf, shape=(cfg.CHUNK_LEN, cfg.BIN)),
-            'centroids': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters, embedd_size)),
-            #'lens': spaces.Discrete(128, start=1)
-            'lens': spaces.Box(low=1, high=seq_max_len+1, shape=(1, 1))
-            })
-        
+
+        if not freeze_frontend:
+            self.observation_space = spaces.Dict({
+                'embedding_space': spaces.Box(low=np.Inf, high=np.Inf, shape=(seq_max_len, embedd_size)),
+                'cur_chunk': spaces.Box(low=np.Inf, high=np.Inf, shape=(cfg.CHUNK_LEN, cfg.BIN)),
+                'centroids': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters, embedd_size)),
+                #'lens': spaces.Discrete(128, start=1)
+                'lens': spaces.Box(low=1, high=seq_max_len+1, shape=(1, 1))
+                })
+        else:
+            self.observation_space = spaces.Dict({
+                'embedding_space': spaces.Box(low=np.Inf, high=np.Inf, shape=(seq_max_len, embedd_size)),
+                'cur_embedding': spaces.Box(low=np.Inf, high=np.Inf, shape=(1, embedd_size)),
+                'centroids': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters, embedd_size)),
+                #'lens': spaces.Discrete(128, start=1)
+                'lens': spaces.Box(low=1, high=seq_max_len+1, shape=(1, 1))
+                })
         # print(self._file_path)
         self._mel_spec = np.load(self._file_path).T  # pre-calculate mel features
         # self._mel_spec = torch.from_numpy(self._mel_spec).transpose(0, 1) # out: (seq_len, feature)
@@ -92,19 +105,24 @@ class OMSSEnv(gym.Env):
         '''
         # print(self._file_path)
         song_name = self._file_path.split('specs')[-1].split('.')[0][1:-4]
-        anno_dir = os.path.join(cfg.SALAMI_DIR, 'annotations', song_name, 'parsed')
-        fps = [os.path.join(anno_dir, 'textfile1_functions.txt'),
-                os.path.join(anno_dir, 'textfile2_functions.txt')]
-        #print(fps)
-        if os.path.exists(fps[0]) and os.path.exists(fps[1]):
-            fp = fps[int(np.random.rand() > 0.5)]
-        elif os.path.exists(fps[0]):
-            fp = fps[0]
-        elif os.path.exists(fps[1]):
-            fp = fps[1]
-        else:
-            return None, None
-        label_df = pd.read_csv(fp, sep='\t', header=None, names=['time', 'label'])
+        if cfg.dataset == 'salami':
+            anno_dir = os.path.join(cfg.SALAMI_DIR, 'annotations', song_name, 'parsed')
+            fps = [os.path.join(anno_dir, 'textfile1_functions.txt'),
+                    os.path.join(anno_dir, 'textfile2_functions.txt')]
+            #print(fps)
+            if os.path.exists(fps[0]) and os.path.exists(fps[1]):
+                fp = fps[int(np.random.rand() > 0.5)]
+            elif os.path.exists(fps[0]):
+                fp = fps[0]
+            elif os.path.exists(fps[1]):
+                fp = fps[1]
+            else:
+                return None, None
+            label_df = pd.read_csv(fp, sep='\t', header=None, names=['time', 'label'])
+        elif cfg.dataset == 'harmonix':
+            fp = os.path.join(cfg.HARMONIX_DIR, 'segments', song_name+'.txt')
+            label_df = pd.read_csv(fp, sep=' ', header=None, names=['time', 'label'])
+        
         times, labels = np.array(label_df['time'], dtype='float32'), label_df['label']
         # map labels to numbers
         labels = labels.str.replace(r'\d+', '', regex=True)
@@ -127,8 +145,13 @@ class OMSSEnv(gym.Env):
     
     def _update_centroids(self, cur_cluster_embedd, cluster_num):
         pre_centroid = self._state['centroids'][cluster_num]
-        N = (np.array(self._est_labels) == cluster_num).sum() - 1
-        centroid = (N * pre_centroid + cur_cluster_embedd.squeeze(0)) / (N + 1)
+        # average embeddings to update centroid
+        # N = (np.array(self._est_labels) == cluster_num).sum() - 1
+        # centroid = (N * pre_centroid + cur_cluster_embedd.squeeze(0)) / (N + 1)
+
+        # exp moving average
+        gamma = 0.567
+        centroid = (1-gamma) * pre_centroid + gamma * cur_cluster_embedd
         self._state['centroids'][cluster_num] = centroid
     
     def _get_ref_label(self):
@@ -181,13 +204,16 @@ class OMSSEnv(gym.Env):
         if self._cur_chunk_idx + self._hop_size + chunk_len >= self._mel_spec.shape[0]:
             done = True
             info['f1'] = self._pairwise_f1[-1] 
-            if info['f1'] >= 60:
-                reward += 1  # get a reward on the end of the episode
+            # if info['f1'] >= 60:
+            #     reward += 100  # get a reward on the end of the episode
             return self.reset(), reward, done, info
         
         # 2. update state
         ### a. update clusters
-        new_feature = self._embedd_chunk(self._state['cur_chunk'])
+        if not self._freeze_frontend:
+            new_feature = self._embedd_chunk(self._state['cur_chunk'])
+        else:
+            new_feature = self._state['cur_embedding']
 
         cluster_num = action
         self._est_labels.append(cluster_num)
@@ -208,7 +234,7 @@ class OMSSEnv(gym.Env):
             self._state['embedding_space'] = np.concatenate([self._embedding_space, zero_padds], axis=0)
             self._state['lens'] = np.array([[self._embedding_space.shape[0]]])
         
-        # c. update the centroids using ... TODO
+        # c. update the centroids using moving average
         cur_cluster_embedd = new_feature
         self._update_centroids(cur_cluster_embedd, cluster_num)
 
@@ -221,7 +247,11 @@ class OMSSEnv(gym.Env):
         start = self._cur_chunk_idx + self._hop_size
         self._cur_chunk_idx = start
         end = start + chunk_len
-        self._state['cur_chunk'] = self._mel_spec[start:end, :]
+
+        if not self._freeze_frontend:
+            self._state['cur_chunk'] = self._mel_spec[start:end, :]
+        else:
+            self._state['cur_embedding'] = self._embedd_chunk(self._mel_spec[start:end, :])
 
         # onehot mask encode the next cluster number if not reaching the maximum cluster number
         # after that, just cat zeros to aviod new clusters, do attention to the previous embeddings
@@ -346,7 +376,6 @@ class OMSSEnv(gym.Env):
         '''
         reward function
         '''
-        skip_cluster_punish = 0
         est_label = action
 
         # pairwise f1 for current chunk
@@ -368,23 +397,42 @@ class OMSSEnv(gym.Env):
 
         # bipartitie graph matching and compare the mapped label with gt
         ## construct graph by step
+        self._step += 1
         ref_label = self._ref_labels[-1]
-        G = self._G
-        if ref_label not in G:
-            G[ref_label] = set()
-        G[ref_label].add(est_label)
-        self._graph_step += 1
 
-        ## update graph matching when reach the freq
-        # if self._graph_step - self._pre_graph_update_step == cfg.graph_update_freq or \
-        #     est_label not in self._matching:
-        if self._graph_step - self._pre_graph_update_step == cfg.graph_update_freq or \
-            self._ref_labels[-1] != self._ref_labels[-2]:
-            self._matching = self._bipartite_match(G)
-            self._pre_graph_update_step = self._graph_step
+        # weighted
+        self._cost_mat[est_label, ref_label] -= 1
+        # print(self._cost_mat)
+        est_idx, ref_idx = linear_sum_assignment(self._cost_mat)
+        # print(est_idx, ref_idx, est_label)
+        reward = 1 if ref_idx[est_idx == est_label] == ref_label else 0
+
+        # # not weighted
+        # G = self._G
+        # if ref_label not in G:
+        #     G[ref_label] = set()
+        # G[ref_label].add(est_label)
         
-        mapped_est_label = self._matching.get(est_label, -1)
-        reward = 1 if mapped_est_label == self._ref_labels[-1] else 0
+        # ## update graph matching when reach the freq
+        # # if self._graph_step - self._pre_graph_update_step == cfg.graph_update_freq or \
+        # #     est_label not in self._matching:
+        # if self._step - self._pre_graph_update_step == cfg.graph_update_freq \
+        #     or self._ref_labels[-1] != self._ref_labels[-2] \
+        #     or len(self._est_labels) == 1:
+        #     self._matching = self._bipartite_match(G)
+        #     self._pre_graph_update_step = self._step
+        
+        # mapped_est_label = self._matching.get(est_label, -1)
+        # reward = 1 if mapped_est_label == self._ref_labels[-1] else 0
+
+        # huge punishment if not meet the segment length requirement
+        if self._est_labels[-1] != est_label:
+            # measure the length of last segment
+            if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
+                reward -= 1.5
+            
+            self._last_boundary_step = self._step
+
 
         # print(self._file_path)
         # print('est_labels: ', self._est_labels + [est_label])
@@ -392,6 +440,12 @@ class OMSSEnv(gym.Env):
         # print('graph: ', G)
         # print('matching: ', self._matching)
         return reward
+
+    def _init_centroids(self, embedd_dim):
+        centroids = np.random.rand(self._num_clusters, embedd_dim)
+        centroids = centroids / np.linalg.norm(centroids, ord=2, axis=1, keepdims=True)
+
+        return centroids
 
     def reset(self):
         """
@@ -410,17 +464,22 @@ class OMSSEnv(gym.Env):
         self._n_sim_pair_est, self._n_sim_pair_ref = 0, 0
         self._pairwise_f1 = [0] # f1 measure is 0 at beginning
 
-        # bipartie graph
+        # bipartie graph matching
+        # the first est label is 0
         self._G = {}  # ref: est
         self._G[ref_label] = set()
         self._G[ref_label].add(0)
         self._matching = {ref_label: 0}
-        self._graph_step = 0
+        self._step = 0
         self._pre_graph_update_step = 0
+        self._last_boundary_step = 0
+        # weighted graph (using number of matching labels as weights)
+        self._cost_mat = np.zeros([self._num_clusters, len(set(self._labels))])
+        self._cost_mat[0, ref_label] -= 1
 
         # embedd the first chunk
         embedd = self._embedd_chunk(self._mel_spec[0:chunk_len, :])
-        #print(embedd.shape)
+        # print(embedd)
         self._cur_chunk_idx = self._hop_size
 
         # cluster encode
@@ -430,16 +489,25 @@ class OMSSEnv(gym.Env):
             embedd = np.concatenate([embedd, cluster_encode], axis=1)
         
         # centroids
-        centroids = np.zeros([self._num_clusters, embedd.shape[1]])
-        centroids[0, :] = embedd
+        centroids = self._init_centroids(embedd.shape[1])
+        gamma = 0.567
+        centroids[0] = (1-gamma) * centroids[0] + gamma * embedd
 
         # zero padd
         zero_padds = np.zeros([self._seq_max_len-1, embedd.shape[1]])
         self._embedding_space = embedd
-        self._state = {'embedding_space': np.concatenate([embedd, zero_padds], axis=0), 
-                        'cur_chunk': self._mel_spec[self._hop_size:self._hop_size+chunk_len, :],
-                        'lens': np.array([[1]]),
-                        'centroids': centroids}
+
+        if not self._freeze_frontend:
+            self._state = {'embedding_space': np.concatenate([embedd, zero_padds], axis=0), 
+                            'cur_chunk': self._mel_spec[self._hop_size:self._hop_size+chunk_len, :],
+                            'lens': np.array([[1]]),
+                            'centroids': centroids}
+        else:
+            cur_embedding = self._embedd_chunk(self._mel_spec[self._hop_size:self._hop_size+chunk_len, :])
+            self._state = {'embedding_space': np.concatenate([embedd, zero_padds], axis=0), 
+                            'cur_embedding': cur_embedding,
+                            'lens': np.array([[1]]),
+                            'centroids': centroids}
         # print(self._state['cur_chunk'])
         return self._state
 
