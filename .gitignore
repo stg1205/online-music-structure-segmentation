@@ -139,5 +139,5 @@ test.ipynb
 wandb
 .VSCodeCounter
 my_mss.ipynb
-nohup.out
+*.out
 test.py
