@@ -281,7 +281,7 @@ class OMSSEnv(gym.Env):
 
         prc = self._n_intersection / self._n_sim_pair_est if self._n_sim_pair_est != 0 else 0
         rec = self._n_intersection / self._n_sim_pair_ref if self._n_sim_pair_ref != 0 else 0
-        f1 = rl_utils.f1_measure(prc, rec, beta=0.5)  # beta=0.5 when more weights on prec
+        f1 = rl_utils.f1_measure(prc, rec, beta=1.0)  # beta=0.5 when more weights on prec
         step = len(self._est_labels)
         #print(step/self._step_len)
         f1 = f1 * step / self._step_len * 100
@@ -429,7 +429,9 @@ class OMSSEnv(gym.Env):
         if self._est_labels[-1] != est_label:
             # measure the length of last segment
             if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
-                reward -= 1.5
+                reward -= 1
+            else:
+                reward += 1
             
             self._last_boundary_step = self._step
 
