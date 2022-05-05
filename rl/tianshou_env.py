@@ -438,8 +438,9 @@ class OMSSEnv(gym.Env):
             if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
                 # filter the correct boundary predictions
                 if self._ref_labels[-1] == self._ref_labels[-2]:
-                    punish = self._final_punish / self._final_eps * self._eps
-                    print(punish)
+                    # linearly increase punishment
+                    punish = self._final_punish / (self._final_eps - 1) * (self._eps - 1)
+                    # print(punish)
                     reward += punish
             # else:
             #     reward += 1
@@ -477,15 +478,16 @@ class OMSSEnv(gym.Env):
         self._n_sim_pair_est, self._n_sim_pair_ref = 0, 0
         self._pairwise_f1 = [0] # f1 measure is 0 at beginning
 
-        self._step = 0
+        
         # bipartie graph matching
         # the first est label is 0
         # self._G = {}  # ref: est
         # self._G[ref_label] = set()
         # self._G[ref_label].add(0)
         # self._matching = {ref_label: 0}
-        # self._pre_graph_update_step = 0
-        # self._last_boundary_step = 0
+        self._step = 0
+        self._pre_graph_update_step = 0
+        self._last_boundary_step = 0
         
         # weighted graph (using number of matching labels as weights)
         self._cost_mat = np.zeros([self._num_clusters, len(set(self._labels))])

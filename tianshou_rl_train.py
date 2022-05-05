@@ -391,7 +391,7 @@ def train(args=get_args()):
                                         args.num_clusters, 
                                         x, 
                                         args.seq_max_len,
-                                        final_eps=args.final_train_eps, 
+                                        final_eps=args.eps_train_final, 
                                         final_punish=args.final_punish, 
                                         cluster_encode=args.cluster_encode, 
                                         freeze_frontend=args.freeze_frontend,
