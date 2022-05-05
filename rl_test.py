@@ -12,6 +12,9 @@ from tqdm import trange
 from links_cluster import LinksCluster
 from utils.msaf_validation import eval_seg
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def test(args):
@@ -106,6 +109,8 @@ def test(args):
         with trange(len(val_dataset)) as t:
             for k in t:
                 fp = val_dataset[k]
+                # if k < 26:
+                #     continue
                 # if not fp.split('/')[-1].startswith('0603'):
                 #     continue
                 print(fp)
@@ -173,9 +178,13 @@ def test(args):
                 plt.savefig(os.path.join(res_dir, song_num + '.jpg'))
                 plt.close()
 
-                # boundary evaluation              
-                est_seg_labels = np.array(song_action_list)[est_idxs]
-                est_idxs.append(len(song_action_list) - 1)
+                # boundary evaluation      
+                end_idx = len(song_action_list) - 1   
+                if end_idx in est_idxs:     
+                    est_seg_labels = np.array(song_action_list)[est_idxs[:-1]]
+                else:
+                    est_seg_labels = np.array(song_action_list)[est_idxs]
+                    est_idxs.append(end_idx)
                 
                 est_times = times[est_idxs]
                 
