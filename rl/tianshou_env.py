@@ -45,6 +45,9 @@ class OMSSEnv(gym.Env):
                 file_path, 
                 seq_max_len, 
                 freeze_frontend,
+                final_eps=0.05,
+                final_punish=-5,
+                eps=1.0, 
                 cluster_encode=True, 
                 mode='train'):
         super(OMSSEnv, self).__init__()
@@ -58,6 +61,10 @@ class OMSSEnv(gym.Env):
         self._embedding_space = None
         self._seq_max_len = seq_max_len
 
+        # reward function is related to exploration
+        self._eps = eps  
+        self._final_punish = final_punish
+        self._final_eps = final_eps
         
         if mode =='train':
             self._hop_size = train_hop_size
@@ -429,9 +436,13 @@ class OMSSEnv(gym.Env):
         if self._est_labels[-1] != est_label:
             # measure the length of last segment
             if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
-                reward -= 1
-            else:
-                reward += 1
+                # filter the correct boundary predictions
+                if self._ref_labels[-1] == self._ref_labels[-2]:
+                    punish = self._final_punish / self._final_eps * self._eps
+                    print(punish)
+                    reward += punish
+            # else:
+            #     reward += 1
             
             self._last_boundary_step = self._step
 
@@ -466,15 +477,16 @@ class OMSSEnv(gym.Env):
         self._n_sim_pair_est, self._n_sim_pair_ref = 0, 0
         self._pairwise_f1 = [0] # f1 measure is 0 at beginning
 
+        self._step = 0
         # bipartie graph matching
         # the first est label is 0
-        self._G = {}  # ref: est
-        self._G[ref_label] = set()
-        self._G[ref_label].add(0)
-        self._matching = {ref_label: 0}
-        self._step = 0
-        self._pre_graph_update_step = 0
-        self._last_boundary_step = 0
+        # self._G = {}  # ref: est
+        # self._G[ref_label] = set()
+        # self._G[ref_label].add(0)
+        # self._matching = {ref_label: 0}
+        # self._pre_graph_update_step = 0
+        # self._last_boundary_step = 0
+        
         # weighted graph (using number of matching labels as weights)
         self._cost_mat = np.zeros([self._num_clusters, len(set(self._labels))])
         self._cost_mat[0, ref_label] -= 1

@@ -49,7 +49,6 @@ def state_to(state, device, args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    so_far_best_pretrained = os.path.join(cfg.SUP_EXP_DIR, '03020414', 'unsup_embedding_best.pt')
 
     # experiment set up
     parser.add_argument('--name', type=str)
@@ -61,9 +60,13 @@ def get_args():
         type=str,
         default=None
     )
-    
+
+    # ----------------RL------------------
     # embedding model
     parser.add_argument('--freeze_frontend', action='store_true')
+
+    # env
+    parser.add_argument('--final_punish', type=float, default=-2.)
 
     # backend
     parser.add_argument('--cluster_encode', action='store_true')
@@ -74,7 +77,7 @@ def get_args():
     parser.add_argument('--num_clusters', type=int, default=5)  # *
     parser.add_argument('--use_rnn', action='store_true')
 
-    # rl
+    # training
     parser.add_argument("--epoch_num", type=int, default=100)
     parser.add_argument('--train_env_batch_size', type=int, default=4)
     parser.add_argument("--scale-obs", type=int, default=0)  # TODO
@@ -96,7 +99,6 @@ def get_args():
     parser.add_argument("--n-step", type=int, default=3)
     # dqn
     parser.add_argument("--target-update-freq", type=int, default=500)
-    
     parser.add_argument("--update-per-step", type=float, default=0.1)
     
     return parser.parse_args()
@@ -168,9 +170,9 @@ def validation(policy: DQNPolicy, val_dataset, args, frontend=None):
                                         cluster_encode=args.cluster_encode, 
                                         freeze_frontend=args.freeze_frontend,
                                         mode='test')
-                if not env.check_anno():
-                    count -= 1
-                    continue
+                # if not env.check_anno():
+                #     count -= 1
+                #     continue
                 state = env.reset()
                 done = False
                 while not done:
@@ -307,7 +309,10 @@ def train(args=get_args()):
                 (args.eps_train - args.eps_train_final)
         else:
             eps = args.eps_train_final
+
         policy.set_eps(eps)
+        train_envs.set_env_attr('_eps', eps)
+
         if args.logger:
             logger.write("train/env_step", env_step, {"train/eps": eps})
         if not args.no_priority:
@@ -386,6 +391,8 @@ def train(args=get_args()):
                                         args.num_clusters, 
                                         x, 
                                         args.seq_max_len,
+                                        final_eps=args.final_train_eps, 
+                                        final_punish=args.final_punish, 
                                         cluster_encode=args.cluster_encode, 
                                         freeze_frontend=args.freeze_frontend,
                                         mode='train') for fp in env_batch])
@@ -469,10 +476,6 @@ def train(args=get_args()):
             val_score, f1 = validation(policy, val_dataset, args, frontend)
         # log validation metrics
         if args.logger:
-            # logger.write('val', epoch, {'val_score': val_score, 
-            #                     'f1': f1,
-            #                     'train_loss': train_loss,
-            #                     'train_score': train_score})
             metrics = {'val/val_score': val_score, 
                                 'val/f1': f1,
                                 'val/train_loss': train_loss,
