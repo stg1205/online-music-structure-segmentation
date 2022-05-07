@@ -1,8 +1,6 @@
 import argparse
 import datetime
 import os
-import pprint
-from tty import CFLAG
 from supervised_model.sup_model import Frontend
 from utils import config as cfg
 import time
@@ -391,6 +389,7 @@ def train(args=get_args()):
                                         args.num_clusters, 
                                         x, 
                                         args.seq_max_len,
+                                        knowing_cluster_num=True,
                                         final_eps=args.eps_train_final, 
                                         final_punish=args.final_punish, 
                                         cluster_encode=args.cluster_encode, 
