@@ -76,10 +76,8 @@ class OMSSEnv(gym.Env):
         
         # tianshou
         self._knowing_cluster_num = knowing_cluster_num
-        if knowing_cluster_num:
-            self.action_space = gym.spaces.Discrete(len(set(self._labels)))
-        else:
-            self.action_space = gym.spaces.Discrete(self._num_clusters)
+        self.action_space = gym.spaces.Discrete(self._num_clusters)
+        
         embedd_size = cfg.EMBEDDING_DIM + num_clusters if cluster_encode else cfg.EMBEDDING_DIM
 
         if not freeze_frontend:
@@ -87,7 +85,7 @@ class OMSSEnv(gym.Env):
                 'embedding_space': spaces.Box(low=np.Inf, high=np.Inf, shape=(seq_max_len, embedd_size)),
                 'cur_chunk': spaces.Box(low=np.Inf, high=np.Inf, shape=(cfg.CHUNK_LEN, cfg.BIN)),
                 'centroids': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters, embedd_size)),
-                #'lens': spaces.Discrete(128, start=1)
+                'mask': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters,)),
                 'lens': spaces.Box(low=1, high=seq_max_len+1, shape=(1, 1))
                 })
         else:
@@ -95,7 +93,7 @@ class OMSSEnv(gym.Env):
                 'embedding_space': spaces.Box(low=np.Inf, high=np.Inf, shape=(seq_max_len, embedd_size)),
                 'cur_embedding': spaces.Box(low=np.Inf, high=np.Inf, shape=(1, embedd_size)),
                 'centroids': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters, embedd_size)),
-                #'lens': spaces.Discrete(128, start=1)
+                'mask': spaces.Box(low=np.Inf, high=np.Inf, shape=(num_clusters,)),
                 'lens': spaces.Box(low=1, high=seq_max_len+1, shape=(1, 1))
                 })
         # print(self._file_path)
@@ -352,19 +350,19 @@ class OMSSEnv(gym.Env):
         # reward = 1 if mapped_est_label == self._ref_labels[-1] else 0
 
         # huge punishment if not meet the segment length requirement
-        if self._est_labels[-1] != est_label:
-            # measure the length of last segment
-            if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
-                # filter the correct boundary predictions
-                if self._ref_labels[-1] == self._ref_labels[-2]:
-                    # linearly increase punishment
-                    punish = self._final_punish / (self._final_eps - 1) * (self._eps - 1)
-                    # print(punish)
-                    reward += punish
-            # else:
-            #     reward += 1
+        # if self._est_labels[-1] != est_label:
+        #     # measure the length of last segment
+        #     if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
+        #         # filter the correct boundary predictions
+        #         if self._ref_labels[-1] == self._ref_labels[-2]:
+        #             # linearly increase punishment
+        #             punish = self._final_punish / (self._final_eps - 1) * (self._eps - 1)
+        #             # print(punish)
+        #             reward += punish
+        #     # else:
+        #     #     reward += 1
             
-            self._last_boundary_step = self._step
+        #     self._last_boundary_step = self._step
 
 
         # print(self._file_path)
@@ -375,10 +373,7 @@ class OMSSEnv(gym.Env):
         return reward
 
     def _init_centroids(self, embedd_dim):
-        if self._knowing_cluster_num:
-            centroids = np.random.rand(len(set(self._labels)), embedd_dim)
-        else:
-            centroids = np.random.rand(self._num_clusters, embedd_dim)
+        centroids = np.random.rand(self._num_clusters, embedd_dim)
         centroids = centroids / np.linalg.norm(centroids, ord=2, axis=1, keepdims=True)
 
         return centroids
@@ -431,6 +426,11 @@ class OMSSEnv(gym.Env):
         gamma = 0.567
         centroids[0] = (1-gamma) * centroids[0] + gamma * embedd
 
+        # cluster num mask
+        mask = np.ones((self._num_clusters,))
+        if self._knowing_cluster_num:
+            mask[range(len(set(self._labels)), self._num_clusters)] = 0
+
         # zero padd
         zero_padds = np.zeros([self._seq_max_len-1, embedd.shape[1]])
         self._embedding_space = embedd
@@ -439,12 +439,14 @@ class OMSSEnv(gym.Env):
             self._state = {'embedding_space': np.concatenate([embedd, zero_padds], axis=0), 
                             'cur_chunk': self._mel_spec[self._hop_size:self._hop_size+chunk_len, :],
                             'lens': np.array([[1]]),
+                            'mask': mask,
                             'centroids': centroids}
         else:
             cur_embedding = self._embedd_chunk(self._mel_spec[self._hop_size:self._hop_size+chunk_len, :])
             self._state = {'embedding_space': np.concatenate([embedd, zero_padds], axis=0), 
                             'cur_embedding': cur_embedding,
                             'lens': np.array([[1]]),
+                            'mask': mask,
                             'centroids': centroids}
         # print(self._state['cur_chunk'])
         return self._state
