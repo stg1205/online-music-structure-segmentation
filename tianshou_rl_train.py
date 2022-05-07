@@ -162,7 +162,7 @@ def validation(policy: DQNPolicy, val_dataset, args, frontend=None):
                 print(fp)
                 env = tianshou_env.OMSSEnv(#q_net.module.get_frontend(), 
                                         frontend,
-                                        args.num_clusters, 
+                                        5, 
                                         fp, 
                                         args.seq_max_len,  # TODO don't need this in val
                                         cluster_encode=args.cluster_encode, 
@@ -405,7 +405,7 @@ def train(args=get_args()):
                 # collect one episode
                 train_fn(epoch, env_step)
                 policy.eval()
-                coll_res = train_collector.collect(n_episode=round(args.train_env_batch_size * 1.5))
+                coll_res = train_collector.collect(n_episode=args.train_env_batch_size)
                 policy.train()
                 if not args.freeze_frontend:
                     policy.model._freeze_bm()
