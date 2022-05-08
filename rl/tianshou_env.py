@@ -352,11 +352,16 @@ class OMSSEnv(gym.Env):
         # huge punishment if not meet the segment length requirement
         # if self._est_labels[-1] != est_label:
         #     # measure the length of last segment
-        #     if self._step - self._last_boundary_step < cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size:
-        #         # filter the correct boundary predictions
-        #         if self._ref_labels[-1] == self._ref_labels[-2]:
+        #     min_steps = cfg.MIN_SEG_LEN / cfg.BIN_TIME_LEN / self._hop_size
+        #     if self._step - self._last_boundary_step < min_steps:
+        #         # majority filter
+        #         chop = self._est_labels[-int(min_steps):]
+        #         maj_label = np.bincount(chop).argmax()
+        #         if est_label != maj_label:
         #             # linearly increase punishment
         #             punish = self._final_punish / (self._final_eps - 1) * (self._eps - 1)
+
+        #             punish = -1
         #             # print(punish)
         #             reward += punish
         #     # else:
