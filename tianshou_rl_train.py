@@ -62,10 +62,10 @@ def get_args():
     # ----------------RL------------------
     # embedding model
     parser.add_argument('--freeze_frontend', action='store_true')
-
+    
     # env
     parser.add_argument('--final_punish', type=float, default=-2.)
-
+    parser.add_argument('--knowing_cluster_num', action='store_true')
     # backend
     parser.add_argument('--cluster_encode', action='store_true')
     parser.add_argument('--hidden_size', type=int, default=128)  #*
@@ -162,7 +162,7 @@ def validation(policy: DQNPolicy, val_dataset, args, frontend=None):
                 print(fp)
                 env = tianshou_env.OMSSEnv(#q_net.module.get_frontend(), 
                                         frontend,
-                                        5, 
+                                        args.num_clusters, 
                                         fp, 
                                         args.seq_max_len,  # TODO don't need this in val
                                         cluster_encode=args.cluster_encode, 
@@ -389,7 +389,7 @@ def train(args=get_args()):
                                         args.num_clusters, 
                                         x, 
                                         args.seq_max_len,
-                                        knowing_cluster_num=True,
+                                        knowing_cluster_num=args.knowing_cluster_num,
                                         final_eps=args.eps_train_final, 
                                         final_punish=args.final_punish, 
                                         cluster_encode=args.cluster_encode, 
